@@ -187,6 +187,7 @@ package.loaded["transport"] = {
     return { { ip = "127.0.0.1", data = py_discovery() } }
   end,
   sleep = function() coroutine.yield() end,
+  http_get = function(ip, port, path, timeout) return py_http_get(ip, port, path) end,
   now = function() return py_time() end,
 }
 function STEP()
@@ -207,6 +208,9 @@ function NEW_DEVICE(info)
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = e end
   function d:emit_component_event(c, e) self.events[#self.events + 1] = { path = c.id .. ":" .. e.path, arg = e.arg } end
+  DELAYED = DELAYED or {}
+  d.thread = { call_with_delay = function(_, secs, fn) DELAYED[#DELAYED + 1] = fn end,
+               call_on_schedule = function() end }
   function d:online() self.state = "online" end
   function d:offline() self.state = "offline" end
   DEVICES[#DEVICES + 1] = d
@@ -252,6 +256,7 @@ def env():
     lua = lua53.LuaRuntime(unpack_returned_tuples=True, encoding=None)
     g = lua.globals()
     g.py_time = time.time
+    g.py_http_get = lambda ip, port, path: (None, "no bridge")
     g.py_connect = lambda ip: (PySock(robot.port), None)
     g.py_discovery = lambda: json.dumps({"hostname": f"iRobot-{BLID}", "ip": "127.0.0.1", "robotname": "Nounou",
                                          "sku": "s955840", "proto": "mqtt", "ver": "3"}).encode()
@@ -375,3 +380,47 @@ def test_favorites_learned_named_and_started(env):
     lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Whole home"}})')
     assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Whole home")
     assert len(json.loads(dev.fields[b"programs"])) == 1
+
+
+def test_favorites_from_bridge(env):
+    robot, lua = env
+    calls = []
+
+    def http_get(ip, port, path):
+        path = path.decode() if isinstance(path, bytes) else path
+        calls.append(path)
+        if path == "/stbridge/info":
+            return json.dumps({"service": "stoeckie-bridge", "id": "b1"}).encode(), None
+        if path.startswith("/stbridge/irobot/" + BLID):
+            return json.dumps({"name": "Nounou", "updated": 1, "favorites": [
+                {"name": "Kamer", "command": "start",
+                 "params": {"pmap_id": "PMAP1", "ordered": 1, "regions": [{"region_id": "5", "type": "rid"}]}},
+                {"name": "Hele keuken", "command": "start",
+                 "params": {"pmap_id": "PMAP1", "ordered": 1, "regions": [{"region_id": "7", "type": "rid"}]}},
+            ]}).encode(), None
+        return None, "HTTP 404"
+    lua.globals().py_http_get = http_get
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b'DEVICES[1].preferences.bridgeAddress = "127.0.0.1"')
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    dev = lua.eval(b"DEVICES[1]")
+    robot.listening = True
+    assert run_until(lua, lambda: dev.state == b"online")
+    lua.execute(b"for _, fn in ipairs(DELAYED) do fn() end; DELAYED = {}")  # the 10 s timer
+    assert run_until(lua, lambda: dev.fields[b"cloud_favs"] is not None)
+
+    def last(path):
+        val = None
+        for i in range(1, len(dev.events) + 1):
+            if dev.events[i].path == path:
+                val = dev.events[i].arg
+        return val
+    assert run_until(lua, lambda: last(b"favorites:cap.mode.supportedModes") is not None and
+                     list(last(b"favorites:cap.mode.supportedModes").values()) == [b"Idle", b"Whole home", b"Kamer", b"Hele keuken"])
+    lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Hele keuken"}})')
+    assert run_until(lua, lambda: robot.payloads and robot.payloads[-1].get("regions") == [{"region_id": "7", "type": "rid"}])
+    assert robot.payloads[-1]["user_pmapv_id"] == "V2"  # current map version from the robot
+    assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Hele keuken")
+    # Refresh asks the bridge to fetch again
+    lua.execute(b"DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: any("refresh=1" in c for c in calls))

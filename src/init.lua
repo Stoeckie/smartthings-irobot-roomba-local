@@ -14,7 +14,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-10-30c"
+local BUILD = "2026-10-30d"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -122,10 +122,10 @@ local function emit_state(device, s)
 end
 
 -- favorites ------------------------------------------------------------------------------
--- The iRobot app keeps favorites (names, rooms) in the cloud. Locally the robot only reports the last
--- command, so the driver learns a favorite the first time it is started (from the app, a schedule or
--- the robot): it stores the map and rooms and offers it in the "Favorites" list. Names come from the
--- "Favorite names" setting, in the order learned.
+-- The iRobot app keeps favorites (names, rooms) in the cloud. Two sources, the first one that has any wins:
+--   1. a Stoeckie Bridge on the LAN with an iRobot login: names and rooms straight from the account
+--   2. learned locally: the robot reports its last command, so a favorite is stored the first time it runs;
+--      names then come from the "Favorite names" setting, in the order learned.
 
 local function programs(device)
   local raw = device:get_field("programs")
@@ -147,11 +147,37 @@ local function program_names(device)
   return out
 end
 
+local function cloud_favorites(device)
+  local ok, list = pcall(json.decode, device:get_field("cloud_favs") or "[]")
+  return (ok and type(list) == "table") and list or {}
+end
+
+--- All favorites as {name, command, params, key}.
+local function entries(device)
+  local out = {}
+  for _, f in ipairs(cloud_favorites(device)) do
+    local params = type(f.params) == "table" and f.params or {}
+    local p = model.program_from({ command = f.command or "start", pmap_id = params.pmap_id, regions = params.regions })
+    out[#out + 1] = { name = f.name, command = f.command or "start", params = params, key = p and p.key }
+  end
+  if #out > 0 then return out end
+  local names = program_names(device)
+  for i, q in ipairs(programs(device)) do
+    out[#out + 1] = { name = names[i], command = "start", key = q.key,
+                      params = { pmap_id = q.pmap_id, regions = q.regions, ordered = q.ordered or 1,
+                                 user_pmapv_id = q.user_pmapv_id } }
+  end
+  return out
+end
+
 local function emit_programs(device, s)
   local comp = device.profile and device.profile.components and device.profile.components.favorites
   if not comp then return end
   local list = { IDLE, WHOLE_HOME }
-  for _, n in ipairs(program_names(device)) do list[#list + 1] = n end
+  local seen = { [IDLE] = true, [WHOLE_HOME] = true }
+  for _, e in ipairs(entries(device)) do
+    if not seen[e.name] then list[#list + 1] = e.name; seen[e.name] = true end
+  end
   local enc = table.concat(list, "\n")
   if s.programs_sig ~= enc then
     s.programs_sig = enc
@@ -164,8 +190,8 @@ local function emit_programs(device, s)
     now = WHOLE_HOME
     local p = model.program_from(s.reported.lastCommand)
     if p then
-      for i, q in ipairs(programs(device)) do
-        if q.key == p.key then now = program_names(device)[i] end
+      for _, e in ipairs(entries(device)) do
+        if e.key == p.key then now = e.name end
       end
     end
   end
@@ -184,6 +210,84 @@ local function learn_program(device, s)
   device:set_field("programs", json.encode(list), { persist = true })
   log.info(string.format("[roomba] %s: learned favorite %d (%d room(s)); name it in the settings",
     device.label, #list, #p.regions))
+end
+
+-- favorites from a Stoeckie Bridge ------------------------------------------------------
+
+local BRIDGE_PORT = 8787
+local CLOUD_EVERY = 6 * 3600
+
+local function bridge_info(ip)
+  local data = net.http_get(ip, BRIDGE_PORT, "/stbridge/info", 2)
+  local ok, j = pcall(json.decode, data or "")
+  return ok and type(j) == "table" and j.service == "stoeckie-bridge"
+end
+
+local function find_bridge(driver, device)
+  local fixed = pref(device, "bridgeAddress")
+  if fixed and fixed:match("^%d+%.%d+%.%d+%.%d+$") then return fixed end
+  if fixed == "off" then return nil end
+  local known = device:get_field("bridge")
+  if known and bridge_info(known) then return known end
+  local last = device:get_field("bridge_scan") or 0
+  if os.time() - last < 3600 then return nil end
+  device:set_field("bridge_scan", os.time())
+  local prefix = hub_prefix(driver)
+  if not prefix then return nil end
+  local found, next_host, pending = nil, 1, 0
+  local function worker()
+    while not found and next_host <= 254 do
+      local ip = prefix .. next_host
+      next_host = next_host + 1
+      if bridge_info(ip) then found = ip end
+    end
+    pending = pending - 1
+  end
+  for i = 1, 16 do
+    pending = pending + 1
+    cosock.spawn(worker, "roomba-bridge-scan-" .. i)
+  end
+  while pending > 0 do net.sleep(0.5) end
+  if found then
+    device:set_field("bridge", found, { persist = true })
+    log.info("[roomba] " .. device.label .. ": Stoeckie Bridge found at " .. found)
+  end
+  return found
+end
+
+local function fetch_cloud_favorites(driver, device, force)
+  local blid = blid_of(device)
+  local ip = blid and find_bridge(driver, device)
+  if not ip then return end
+  local path = "/stbridge/irobot/" .. blid .. (force and "?refresh=1" or "")
+  local data, err = net.http_get(ip, BRIDGE_PORT, path, 5)
+  local ok, j = pcall(json.decode, data or "")
+  if not ok or type(j) ~= "table" or type(j.favorites) ~= "table" then
+    if err then log.debug("[roomba] bridge: " .. tostring(err)) end
+    return
+  end
+  local enc = json.encode(j.favorites)
+  if enc ~= device:get_field("cloud_favs") then
+    device:set_field("cloud_favs", enc, { persist = true })
+    local names = {}
+    for _, f in ipairs(j.favorites) do names[#names + 1] = tostring(f.name) end
+    log.info(string.format("[roomba] %s: %d favorite(s) from the iRobot account: %s", device.label,
+      #j.favorites, table.concat(names, ", ")))
+    local s = sessions[device.id]
+    if s then s.programs_sig = nil; emit_programs(device, s) end
+  end
+end
+
+local function schedule_cloud(driver, device)
+  local function run(force)
+    cosock.spawn(function()
+      local okc, e = pcall(fetch_cloud_favorites, driver, device, force)
+      if not okc then log.warn("[roomba] favorites from bridge failed: " .. tostring(e)) end
+    end, "roomba-cloud-favs")
+  end
+  device.thread:call_with_delay(10, function() run(false) end)
+  device.thread:call_on_schedule(CLOUD_EVERY, function() run(false) end, "roomba-cloud-favs")
+  return run
 end
 
 -- password ----------------------------------------------------------------------------
@@ -423,22 +527,28 @@ local function handle_set_mode(_, device, cmd)
     enqueue(device, "start")
     return
   end
-  for i, name in ipairs(program_names(device)) do
-    if name == want then
-      local p = programs(device)[i]
+  for _, e in ipairs(entries(device)) do
+    if e.name == want then
+      local params = {}
+      for k, v in pairs(e.params or {}) do params[k] = v end
       local s = sessions[device.id]
-      local version = s and model.map_version(s.reported, p.pmap_id) or p.user_pmapv_id
-      local params = { pmap_id = p.pmap_id, regions = p.regions, ordered = p.ordered or 1 }
+      local version = s and params.pmap_id and model.map_version(s.reported, params.pmap_id)
       if version then params.user_pmapv_id = version end
-      log.info(string.format("[roomba] %s: start favorite '%s'", device.label, name))
-      enqueue(device, "start", 0, params)
+      log.info(string.format("[roomba] %s: start favorite '%s'", device.label, want))
+      enqueue(device, e.command or "start", 0, params)
       return
     end
   end
   log.warn("[roomba] unknown favorite " .. tostring(want))
 end
 
+local cloud_runs = {}
+
 local function handle_refresh(driver, device)
+  if cloud_runs[device.id] then
+    cloud_runs[device.id](true)
+    device.thread:call_with_delay(20, function() cloud_runs[device.id](false) end)
+  end
   local s = sessions[device.id]
   if s and s.connected then
     s.last_sig = nil
@@ -454,6 +564,7 @@ local discovered = {}
 
 local function device_init(driver, device)
   if not sessions[device.id] or not sessions[device.id].running then start_session(driver, device) end
+  if not cloud_runs[device.id] then cloud_runs[device.id] = schedule_cloud(driver, device) end
 end
 
 local function device_added(driver, device)
@@ -480,12 +591,23 @@ local function info_changed(driver, device, event, args)
     local s = sessions[device.id]
     if s then s.programs_sig = nil; emit_programs(device, s) end
   end
+  if p.bridgeAddress ~= old.bridgeAddress and cloud_runs[device.id] then
+    device:set_field("bridge_scan", nil)
+    if p.bridgeAddress == "off" then
+      device:set_field("cloud_favs", nil, { persist = true })
+      local s = sessions[device.id]
+      if s then s.programs_sig = nil; emit_programs(device, s) end
+    else
+      cloud_runs[device.id](false)
+    end
+  end
   if p.ipAddress ~= old.ipAddress or p.password ~= old.password or (p.resetPassword and not old.resetPassword) then
     start_session(driver, device)
   end
 end
 
 local function device_removed(_, device)
+  cloud_runs[device.id] = nil
   local s = sessions[device.id]
   if s then s.running = false end
   sessions[device.id] = nil

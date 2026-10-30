@@ -31,7 +31,11 @@ The robot accepts **one local connection at a time**. If Home Assistant or anoth
 
 ## Favorites
 
-The iRobot app keeps favorites in the cloud; locally the robot only reports the last command. So the driver **learns** a favorite the first time it runs: start each favorite once from the iRobot app (or let a schedule run it). The driver stores the map and rooms on the hub and adds it to the Favorites list as "Favorite 1", "Favorite 2" and so on.
+The iRobot app keeps favorites in the cloud. Two ways to get them into the **Favorites** list:
+
+**Automatic, with a Stoeckie Bridge** ([smartthings-aeg-bridge](https://github.com/Stoeckie/smartthings-aeg-bridge)): enter your iRobot login on the bridge setup page. The driver finds the bridge on the network (setting **Stoeckie Bridge IP**: `auto`, a fixed IP or `off`) and shows your favorites with their names, refreshed every 6 hours and when you press Refresh. The robot is still controlled locally.
+
+**Without a bridge**, the driver **learns** a favorite the first time it runs: start each favorite once from the iRobot app (or let a schedule run it). The driver stores the map and rooms on the hub and adds it to the Favorites list as "Favorite 1", "Favorite 2" and so on.
 
 Name them in the device settings under **Favorite names**, comma separated in the order they were learned, e.g. `Kamer, Hele keuken`. The log shows `learned favorite N` each time. **Forget learned favorites** clears the list.
 
@@ -44,7 +48,8 @@ If you edit the map in the iRobot app, the driver sends the current map version;
 | Robot IP | `auto` (discovery) or a fixed IP |
 | Robot password | Leave empty: the hub fetches it. Only paste one when you already have it from another tool (roombapy, dorita980) |
 | Forget password | Forget the stored password, then hold HOME again |
-| Favorite names | Names for the learned favorites, comma separated |
+| Stoeckie Bridge IP | `auto`, a fixed IP or `off`: favorites with names from the iRobot account via the bridge |
+| Favorite names | Names for the learned favorites (without a bridge), comma separated |
 | Forget learned favorites | Clear the learned favorites |
 
 ## Privacy

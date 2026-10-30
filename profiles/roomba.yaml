@@ -46,9 +46,17 @@ preferences:
     preferenceType: boolean
     definition:
       default: false
+  - name: bridgeAddress
+    title: Stoeckie Bridge IP (optional)
+    description: For favorite names from your iRobot account. "auto" finds the bridge on the network, "off" uses only learned favorites.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: "auto"
   - name: favoriteNames
     title: Favorite names
-    description: Comma separated, in the order the driver learned them (start each favorite once in the iRobot app), e.g. "Kamer, Hele keuken".
+    description: Only without a bridge. Comma separated, in the order learned (start each favorite once in the iRobot app), e.g. "Kamer, Hele keuken".
     required: false
     preferenceType: string
     definition:

@@ -53,6 +53,19 @@ function M.discover(prefix, window)
   return out
 end
 
+--- Plain HTTP GET on the LAN (for a Stoeckie Bridge). Returns body or nil, err.
+function M.http_get(ip, port, path, timeout)
+  local http = cosock.asyncify "socket.http"
+  local ltn12 = require "ltn12"
+  local chunks = {}
+  http.TIMEOUT = timeout or 5
+  local ok, code = http.request({ url = string.format("http://%s:%d%s", ip, port, path),
+                                  sink = ltn12.sink.table(chunks) })
+  if not ok then return nil, tostring(code) end
+  if code ~= 200 then return nil, "HTTP " .. tostring(code) end
+  return table.concat(chunks)
+end
+
 function M.sleep(s) socket.sleep(s) end
 function M.now() return socket.gettime() end
 
