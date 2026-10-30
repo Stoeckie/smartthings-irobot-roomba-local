@@ -12,6 +12,11 @@ components:
         version: 1
     categories:
       - name: RobotCleaner
+  - id: favorites
+    label: Favorites
+    capabilities:
+      - id: mode
+        version: 1
   - id: emptyBin
     label: Empty bin
     capabilities:
@@ -37,6 +42,21 @@ preferences:
   - name: resetPassword
     title: Forget password
     description: Switch on to forget the stored password (then hold HOME again).
+    required: false
+    preferenceType: boolean
+    definition:
+      default: false
+  - name: favoriteNames
+    title: Favorite names
+    description: Comma separated, in the order the driver learned them (start each favorite once in the iRobot app), e.g. "Kamer, Hele keuken".
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""
+  - name: resetFavorites
+    title: Forget learned favorites
+    description: Switch on to clear the list, then start your favorites again in the iRobot app.
     required: false
     preferenceType: boolean
     definition:

@@ -14,7 +14,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-10-30b"
+local BUILD = "2026-10-30c"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -25,6 +25,11 @@ local rcm = capabilities.robotCleanerMovement
 local switch = capabilities.switch
 local battery = capabilities.battery
 local momentary = capabilities.momentary
+local modecap = capabilities.mode
+
+local WHOLE_HOME = "Whole home"
+local IDLE = "Idle"
+local MAX_PROGRAMS = 12
 
 local sessions = {} -- device.id -> session state
 
@@ -113,6 +118,72 @@ local function emit_state(device, s)
       tostring(v.battery), v.error_text and (" error: " .. v.error_text) or "", v.bin_full and " bin full" or ""))
   end
   s.view = v
+  if s.emit_programs then s.emit_programs(device, s) end
+end
+
+-- favorites ------------------------------------------------------------------------------
+-- The iRobot app keeps favorites (names, rooms) in the cloud. Locally the robot only reports the last
+-- command, so the driver learns a favorite the first time it is started (from the app, a schedule or
+-- the robot): it stores the map and rooms and offers it in the "Favorites" list. Names come from the
+-- "Favorite names" setting, in the order learned.
+
+local function programs(device)
+  local raw = device:get_field("programs")
+  local ok, list = pcall(json.decode, raw or "[]")
+  return (ok and type(list) == "table") and list or {}
+end
+
+local function program_names(device)
+  local names = {}
+  for n in (pref(device, "favoriteNames") or ""):gmatch("[^,]+") do
+    names[#names + 1] = n:match("^%s*(.-)%s*$")
+  end
+  local out = {}
+  for i, _ in ipairs(programs(device)) do
+    local n = names[i]
+    if not n or n == "" then n = "Favorite " .. i end
+    out[i] = n
+  end
+  return out
+end
+
+local function emit_programs(device, s)
+  local comp = device.profile and device.profile.components and device.profile.components.favorites
+  if not comp then return end
+  local list = { IDLE, WHOLE_HOME }
+  for _, n in ipairs(program_names(device)) do list[#list + 1] = n end
+  local enc = table.concat(list, "\n")
+  if s.programs_sig ~= enc then
+    s.programs_sig = enc
+    try_emit(device, function() return modecap.supportedModes(list, { visibility = { displayed = false } }) end, comp)
+  end
+  -- what is running now
+  local v = s.view or model.view(s.reported)
+  local now = IDLE
+  if v.active then
+    now = WHOLE_HOME
+    local p = model.program_from(s.reported.lastCommand)
+    if p then
+      for i, q in ipairs(programs(device)) do
+        if q.key == p.key then now = program_names(device)[i] end
+      end
+    end
+  end
+  try_emit(device, function() return modecap.mode(now) end, comp)
+end
+
+local function learn_program(device, s)
+  local p = model.program_from(s.reported.lastCommand)
+  if not p then return end
+  local list = programs(device)
+  for _, q in ipairs(list) do
+    if q.key == p.key then return end
+  end
+  if #list >= MAX_PROGRAMS then return end
+  list[#list + 1] = p
+  device:set_field("programs", json.encode(list), { persist = true })
+  log.info(string.format("[roomba] %s: learned favorite %d (%d room(s)); name it in the settings",
+    device.label, #list, #p.regions))
 end
 
 -- password ----------------------------------------------------------------------------
@@ -145,14 +216,16 @@ end
 
 -- session -------------------------------------------------------------------------------
 
-local function enqueue(device, command, delay)
+local function enqueue(device, command, delay, params)
   local s = sessions[device.id]
   if not s then return end
-  s.queue[#s.queue + 1] = { command = command, at = net.now() + (delay or 0) }
+  s.queue[#s.queue + 1] = { command = command, at = net.now() + (delay or 0), params = params }
 end
 
-local function command_payload(command)
-  return json.encode({ command = command, time = os.time(), initiator = "localApp" })
+local function command_payload(command, params)
+  local msg = { command = command, time = os.time(), initiator = "localApp" }
+  for k, v in pairs(params or {}) do msg[k] = v end
+  return json.encode(msg)
 end
 
 local function flush_queue(s, session)
@@ -161,7 +234,7 @@ local function flush_queue(s, session)
   for _, item in ipairs(s.queue) do
     if item.at <= now then
       log.info("[roomba] command " .. item.command)
-      local ok, err = session:publish("cmd", command_payload(item.command))
+      local ok, err = session:publish("cmd", command_payload(item.command, item.params))
       if not ok then return nil, err end
       s.last_tx = now
     else
@@ -257,7 +330,9 @@ local function run_session(driver, device)
                 local dok, msg = pcall(json.decode, p.payload)
                 local rep = dok and model.reported(msg)
                 if rep then
+                  if rep.lastCommand then s.reported.lastCommand = nil end -- replace, never merge
                   model.merge(s.reported, rep)
+                  if rep.lastCommand then learn_program(device, s) end
                   emit_state(device, s)
                 end
               end
@@ -291,7 +366,7 @@ end
 local function start_session(driver, device)
   local old = sessions[device.id]
   if old then old.running = false end
-  local s = { running = true, queue = {}, reported = {}, connected = false }
+  local s = { running = true, queue = {}, reported = {}, connected = false, emit_programs = emit_programs }
   sessions[device.id] = s
   cosock.spawn(function()
     local ok, err = pcall(run_session, driver, device)
@@ -339,6 +414,30 @@ end
 
 local function handle_empty_bin(_, device) enqueue(device, "evac") end
 
+local function handle_set_mode(_, device, cmd)
+  local want = cmd.args.mode
+  if want == IDLE then
+    do_dock(device)
+    return
+  elseif want == WHOLE_HOME then
+    enqueue(device, "start")
+    return
+  end
+  for i, name in ipairs(program_names(device)) do
+    if name == want then
+      local p = programs(device)[i]
+      local s = sessions[device.id]
+      local version = s and model.map_version(s.reported, p.pmap_id) or p.user_pmapv_id
+      local params = { pmap_id = p.pmap_id, regions = p.regions, ordered = p.ordered or 1 }
+      if version then params.user_pmapv_id = version end
+      log.info(string.format("[roomba] %s: start favorite '%s'", device.label, name))
+      enqueue(device, "start", 0, params)
+      return
+    end
+  end
+  log.warn("[roomba] unknown favorite " .. tostring(want))
+end
+
 local function handle_refresh(driver, device)
   local s = sessions[device.id]
   if s and s.connected then
@@ -372,6 +471,14 @@ local function info_changed(driver, device, event, args)
   if p.resetPassword and not old.resetPassword then
     device:set_field("pw", nil, { persist = true })
     log.info("[roomba] " .. device.label .. ": stored password forgotten, hold HOME on the docked robot")
+  end
+  if p.resetFavorites and not old.resetFavorites then
+    device:set_field("programs", nil, { persist = true })
+    log.info("[roomba] " .. device.label .. ": learned favorites forgotten")
+  end
+  if p.favoriteNames ~= old.favoriteNames or (p.resetFavorites and not old.resetFavorites) then
+    local s = sessions[device.id]
+    if s then s.programs_sig = nil; emit_programs(device, s) end
   end
   if p.ipAddress ~= old.ipAddress or p.password ~= old.password or (p.resetPassword and not old.resetPassword) then
     start_session(driver, device)
@@ -433,6 +540,9 @@ local driver = Driver("irobot-roomba-local", {
     },
     [momentary.ID] = {
       [momentary.commands.push.NAME] = handle_empty_bin,
+    },
+    [modecap.ID] = {
+      [modecap.commands.setMode.NAME] = handle_set_mode,
     },
   },
 })

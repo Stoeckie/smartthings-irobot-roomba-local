@@ -78,4 +78,36 @@ function M.view(r)
   }
 end
 
+--- A cleaning job for chosen rooms (a favorite started in the iRobot app) from `lastCommand`, or nil.
+--- Returns {key=..., pmap_id=..., regions={...}, ordered=..., user_pmapv_id=...}.
+function M.program_from(last)
+  if type(last) ~= "table" then return nil end
+  if last.command ~= "start" and last.command ~= "clean" then return nil end
+  if type(last.regions) ~= "table" or #last.regions == 0 or not last.pmap_id then return nil end
+  local regions, ids = {}, {}
+  for _, r in ipairs(last.regions) do
+    if type(r) == "table" and r.region_id ~= nil then
+      local t = { region_id = tostring(r.region_id), type = r.type or "rid" }
+      if r.params ~= nil then t.params = r.params end
+      regions[#regions + 1] = t
+      ids[#ids + 1] = t.type .. ":" .. t.region_id
+    end
+  end
+  if #regions == 0 then return nil end
+  return {
+    key = tostring(last.pmap_id) .. "|" .. table.concat(ids, ","),
+    pmap_id = tostring(last.pmap_id),
+    regions = regions,
+    ordered = last.ordered,
+    user_pmapv_id = last.user_pmapv_id,
+  }
+end
+
+--- Current map version for `pmap_id` from the reported `pmaps` list ([{pmap_id = pmapv_id}, ...]).
+function M.map_version(r, pmap_id)
+  for _, m in ipairs(type(r.pmaps) == "table" and r.pmaps or {}) do
+    if type(m) == "table" and m[pmap_id] then return m[pmap_id] end
+  end
+end
+
 return M

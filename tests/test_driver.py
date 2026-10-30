@@ -70,6 +70,9 @@ class FakeRoomba:
         self.listening = False   # HOME held
         self.password = PW
         self.commands = []
+        self.payloads = []
+        self.last_command = {"command": "start", "initiator": "rmtApp", "time": 1, "ordered": 1, "pmap_id": "PMAP1",
+                             "regions": [{"region_id": "5", "type": "rid"}], "user_pmapv_id": "V1"}
         self.logins = []
         self.phase = "charge"
         self.conn = None
@@ -78,6 +81,7 @@ class FakeRoomba:
     def state(self):
         cycle = "none" if self.phase in ("charge",) else "clean"
         return json.dumps({"state": {"reported": {"batPct": 87, "bin": {"present": True, "full": False},
+                                                   "lastCommand": self.last_command, "pmaps": [{"PMAP1": "V2"}],
                                                    "cleanMissionStatus": {"cycle": cycle, "phase": self.phase,
                                                                           "error": 0, "mssnM": 3}}}})
 
@@ -126,6 +130,8 @@ class FakeRoomba:
                     topic, p = mqtt_str(body, 0)
                     cmd = json.loads(body[p:])
                     self.commands.append(cmd["command"])
+                    self.payloads.append(cmd)
+                    self.last_command = {k: v for k, v in cmd.items() if k != "time"}
                     self.phase = {"start": "run", "resume": "run", "pause": "stop", "dock": "hmUsrDock",
                                   "stop": "stop"}.get(cmd["command"], self.phase)
                     conn.sendall(publish(f"$aws/things/{BLID}/shadow/update", self.state(), qos=0))
@@ -146,7 +152,7 @@ local function capmock(path)
     __call = function(_, a) return { path = path, arg = a } end })
 end
 local caps = capmock("cap")
-for _, id in ipairs({ "refresh", "switch", "robotCleanerMovement", "momentary", "battery" }) do caps[id].ID = id end
+for _, id in ipairs({ "refresh", "switch", "robotCleanerMovement", "momentary", "battery", "mode" }) do caps[id].ID = id end
 package.loaded["st.capabilities"] = caps
 package.loaded["st.driver"] = function(name, tmpl) DRIVER = tmpl; return { run = function() end } end
 LOG = {}
@@ -195,11 +201,12 @@ end
 DEVICES = {}
 function NEW_DEVICE(info)
   local d = { id = info.id or ("dev" .. (#DEVICES + 1)), fields = {}, preferences = info.preferences or {},
-              device_network_id = info.device_network_id, label = info.label, events = {}, state = "?" }
+              device_network_id = info.device_network_id, label = info.label, events = {}, state = "?",
+              profile = { components = { main = { id = "main" }, favorites = { id = "favorites" } } } }
   function d:get_field(k) return self.fields[k] end
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = e end
-  function d:emit_component_event(c, e) self.events[#self.events + 1] = e end
+  function d:emit_component_event(c, e) self.events[#self.events + 1] = { path = c.id .. ":" .. e.path, arg = e.arg } end
   function d:online() self.state = "online" end
   function d:offline() self.state = "offline" end
   DEVICES[#DEVICES + 1] = d
@@ -334,3 +341,37 @@ def test_model_mapping():
         v = m.view(t)
         assert (v.movement, v.active) == (movement, active), cms
     assert m.view(lua.table_from({"cleanMissionStatus": lua.table_from({"phase": "stuck", "error": 17})})).error_text == "Path blocked"
+
+
+def test_favorites_learned_named_and_started(env):
+    robot, lua = env
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b'DEVICES[1].preferences.favoriteNames = "Kamer, Hele keuken"')
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    dev = lua.eval(b"DEVICES[1]")
+    robot.listening = True
+    assert run_until(lua, lambda: dev.fields[b"programs"] is not None)
+    progs = json.loads(dev.fields[b"programs"])
+    assert len(progs) == 1 and progs[0]["pmap_id"] == "PMAP1" and progs[0]["regions"][0]["region_id"] == "5"
+
+    def last(path):
+        val = None
+        for i in range(1, len(dev.events) + 1):
+            if dev.events[i].path == path:
+                val = dev.events[i].arg
+        return val
+    assert run_until(lua, lambda: last(b"favorites:cap.mode.supportedModes") is not None)
+    modes = list(last(b"favorites:cap.mode.supportedModes").values())
+    assert modes == [b"Idle", b"Whole home", b"Kamer"]
+    # charging, not active -> Idle
+    assert last(b"favorites:cap.mode.mode") == b"Idle"
+    lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Kamer"}})')
+    assert run_until(lua, lambda: robot.payloads and robot.payloads[-1].get("regions"))
+    pl = robot.payloads[-1]
+    assert pl["command"] == "start" and pl["pmap_id"] == "PMAP1" and pl["user_pmapv_id"] == "V2"
+    assert pl["regions"] == [{"region_id": "5", "type": "rid"}] and pl["initiator"] == "localApp"
+    assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Kamer")
+    # a plain start is not a favorite and must not merge with the old regions
+    lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Whole home"}})')
+    assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Whole home")
+    assert len(json.loads(dev.fields[b"programs"])) == 1
