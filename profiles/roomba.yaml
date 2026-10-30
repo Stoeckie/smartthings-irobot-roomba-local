@@ -1,0 +1,43 @@
+name: roomba
+components:
+  - id: main
+    capabilities:
+      - id: robotCleanerMovement
+        version: 1
+      - id: switch
+        version: 1
+      - id: battery
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: RobotCleaner
+  - id: emptyBin
+    label: Empty bin
+    capabilities:
+      - id: momentary
+        version: 1
+preferences:
+  - name: ipAddress
+    title: Robot IP (optional)
+    description: Leave on "auto" (found on the network). Set a fixed IP when discovery fails.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: "auto"
+  - name: password
+    title: Robot password (optional)
+    description: Leave empty. The hub fetches it itself when you hold HOME on the docked robot for 2 seconds. Only paste one here if you already have it from another tool.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""
+  - name: resetPassword
+    title: Forget password
+    description: Switch on to forget the stored password (then hold HOME again).
+    required: false
+    preferenceType: boolean
+    definition:
+      default: false

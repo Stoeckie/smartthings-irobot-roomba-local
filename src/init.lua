@@ -1,0 +1,441 @@
+-- SmartThings Edge driver: iRobot Roomba (local).
+-- The hub talks to the robot's own MQTT broker (TLS, port 8883) on the LAN: no cloud, no bridge.
+--   discovery  UDP "irobotmcs" on port 5678 (broadcast and a sweep of the hub's /24)
+--   password   fetched once from the robot while HOME is held for 2 s on the dock, stored on the hub
+--   state      pushed by the robot (shadow updates), merged and mapped to SmartThings
+--   commands   start / pause / resume / stop / dock / evac on topic "cmd"
+-- No secrets in the code: the password lives in a persistent device field (or a device setting).
+local Driver = require "st.driver"
+local capabilities = require "st.capabilities"
+local log = require "log"
+local cosock = require "cosock"
+local json = require "st.json"
+local mqtt = require "mqtt"
+local model = require "roomba_model"
+local net = require "transport"
+
+local BUILD = "2026-10-30b"
+local KEEPALIVE = 60
+local PING_AFTER = 30
+local DEAD_AFTER = 120
+local PW_RETRY = 5
+local RECONNECT_MIN, RECONNECT_MAX = 5, 120
+
+local rcm = capabilities.robotCleanerMovement
+local switch = capabilities.switch
+local battery = capabilities.battery
+local momentary = capabilities.momentary
+
+local sessions = {} -- device.id -> session state
+
+-- helpers -------------------------------------------------------------------------
+
+local function blid_of(device)
+  return device:get_field("blid") or (device.device_network_id or ""):match("^roomba%-(.+)$")
+end
+
+local function pref(device, name)
+  local v = (device.preferences or {})[name]
+  if type(v) == "string" then v = v:match("^%s*(.-)%s*$") end
+  return v
+end
+
+local function address(device)
+  local ip = pref(device, "ipAddress")
+  if ip and ip ~= "" and ip ~= "auto" then return ip end
+  return device:get_field("ip")
+end
+
+local function password(device)
+  local p = pref(device, "password")
+  if p and p ~= "" then return p, "setting" end
+  local f = device:get_field("pw")
+  if f and f ~= "" then return f, "field" end
+end
+
+local function parse_reply(data)
+  local ok, j = pcall(json.decode, data)
+  if not ok or type(j) ~= "table" then return nil end
+  local blid = type(j.hostname) == "string" and j.hostname:match("^%a+%-(%w+)$")
+  if not blid or (j.proto and j.proto ~= "mqtt") then return nil end
+  return { blid = blid, ip = j.ip, name = j.robotname, sku = j.sku, sw = j.sw, ver = j.ver }
+end
+
+local function hub_prefix(driver)
+  local ip = driver.environment_info and driver.environment_info.hub_ipv4
+  if not ip then
+    local ok, addr = pcall(function()
+      local s = cosock.socket.udp()
+      s:setpeername("8.8.8.8", 53)
+      local a = s:getsockname()
+      s:close()
+      return a
+    end)
+    if ok then ip = addr end
+  end
+  return type(ip) == "string" and ip:match("^(%d+%.%d+%.%d+%.)") or nil
+end
+
+local function find_robots(driver, window)
+  local found = {}
+  for _, r in ipairs(net.discover(hub_prefix(driver), window)) do
+    local info = parse_reply(r.data)
+    if info then
+      info.ip = info.ip or r.ip
+      found[info.blid] = info
+    end
+  end
+  return found
+end
+
+-- state -> events -------------------------------------------------------------------
+
+local function try_emit(device, make, component)
+  local ok, err = pcall(function()
+    local ev = make()
+    if component then device:emit_component_event(component, ev) else device:emit_event(ev) end
+  end)
+  if not ok then log.warn("[roomba] " .. tostring(device.label) .. ": " .. tostring(err)) end
+end
+
+local function emit_state(device, s)
+  local v = model.view(s.reported)
+  if v.phase == "" and v.battery == nil then return end -- nothing useful yet
+  try_emit(device, function() return rcm.robotCleanerMovement[v.movement]() end)
+  try_emit(device, function() return v.active and switch.switch.on() or switch.switch.off() end)
+  if v.battery then
+    try_emit(device, function() return battery.battery(math.max(0, math.min(100, math.floor(v.battery)))) end)
+  end
+  local sig = v.phase .. "/" .. v.cycle .. "/" .. v.error .. "/" .. tostring(v.bin_full)
+  if sig ~= s.last_sig then
+    s.last_sig = sig
+    log.info(string.format("[roomba] %s: phase=%s cycle=%s battery=%s%s%s", device.label, v.phase, v.cycle,
+      tostring(v.battery), v.error_text and (" error: " .. v.error_text) or "", v.bin_full and " bin full" or ""))
+  end
+  s.view = v
+end
+
+-- password ----------------------------------------------------------------------------
+
+local PASSWORD_REQUEST = string.char(0xf0, 0x05, 0xef, 0xcc, 0x3b, 0x29, 0x00)
+local UNSUPPORTED = string.char(0xf0, 0x05, 0xef, 0xcc, 0x3b, 0x29, 0x03)
+
+--- Ask the robot for its password. Only answers while HOME was just held for 2 s on the dock.
+local function fetch_password(ip)
+  local sock, err = net.connect_tls(ip, net.PORT, 6)
+  if not sock then return nil, err end
+  local ok, serr = sock:send(PASSWORD_REQUEST)
+  if not ok then sock:close(); return nil, serr end
+  sock:settimeout(6)
+  local raw, want = "", 35
+  while #raw < want + 2 do
+    local data, rerr, partial = sock:receive(1)
+    data = data or (partial ~= "" and partial or nil)
+    if not data then break end
+    raw = raw .. data
+    if raw == UNSUPPORTED then sock:close(); return nil, "unsupported" end
+    if #raw >= 2 then want = raw:byte(2) end
+  end
+  sock:close()
+  if #raw <= 7 then return nil, "no answer" end
+  local pw = raw:sub(8):gsub("%z+$", "")
+  if pw == "" then return nil, "empty" end
+  return pw
+end
+
+-- session -------------------------------------------------------------------------------
+
+local function enqueue(device, command, delay)
+  local s = sessions[device.id]
+  if not s then return end
+  s.queue[#s.queue + 1] = { command = command, at = net.now() + (delay or 0) }
+end
+
+local function command_payload(command)
+  return json.encode({ command = command, time = os.time(), initiator = "localApp" })
+end
+
+local function flush_queue(s, session)
+  local now = net.now()
+  local keep = {}
+  for _, item in ipairs(s.queue) do
+    if item.at <= now then
+      log.info("[roomba] command " .. item.command)
+      local ok, err = session:publish("cmd", command_payload(item.command))
+      if not ok then return nil, err end
+      s.last_tx = now
+    else
+      keep[#keep + 1] = item
+    end
+  end
+  s.queue = keep
+  return true
+end
+
+local function run_session(driver, device)
+  local s = sessions[device.id]
+  local backoff = RECONNECT_MIN
+  while s.running do
+    local ip = address(device)
+    local blid = blid_of(device)
+    if not ip then
+      local found = find_robots(driver, 4)[blid or ""]
+      if found and found.ip then
+        device:set_field("ip", found.ip, { persist = true })
+        ip = found.ip
+      else
+        log.warn("[roomba] " .. device.label .. ": robot not found on the network, set its IP in the settings")
+        net.sleep(60)
+      end
+    end
+    local pw, source = password(device)
+    if ip and not pw then
+      if not s.hinted then
+        log.info("[roomba] " .. device.label .. ": no password yet. Put the robot on its dock and hold HOME "
+          .. "for 2 seconds until it plays tones; the hub then fetches the password")
+        s.hinted = true
+      end
+      local got, err = fetch_password(ip)
+      if got then
+        device:set_field("pw", got, { persist = true })
+        log.info("[roomba] " .. device.label .. ": password received from the robot and stored on the hub")
+        pw, source = got, "field"
+      else
+        if err == "unsupported" then
+          log.warn("[roomba] " .. device.label .. ": this robot only gives its password to the iRobot cloud")
+        end
+        net.sleep(PW_RETRY)
+      end
+    end
+    if ip and pw then
+      local ok_session = false
+      local sock, cerr = net.connect_tls(ip, net.PORT, 10)
+      if not sock then
+        log.warn(string.format("[roomba] %s: cannot connect to %s: %s", device.label, ip, tostring(cerr)))
+        -- the IP may have changed: look again when not fixed in the settings
+        if not (pref(device, "ipAddress") or ""):match("%d") then
+          local found = find_robots(driver, 3)[blid or ""]
+          if found and found.ip and found.ip ~= ip then
+            device:set_field("ip", found.ip, { persist = true })
+            log.info("[roomba] " .. device.label .. " moved to " .. found.ip)
+          end
+        end
+      else
+        local session = mqtt.new(sock)
+        local ok, err, rc = session:connect(blid, blid, pw, KEEPALIVE, 10)
+        if not ok then
+          log.warn(string.format("[roomba] %s: MQTT connect failed: %s", device.label, tostring(err)))
+          if rc == 4 or rc == 5 then
+            if source == "field" then
+              device:set_field("pw", nil, { persist = true })
+              s.hinted = false
+              log.warn("[roomba] " .. device.label .. ": stored password rejected, hold HOME again")
+            else
+              log.warn("[roomba] " .. device.label .. ": the password in the settings is wrong")
+              net.sleep(60)
+            end
+          elseif rc == 3 then
+            log.warn("[roomba] " .. device.label .. ": robot busy (only one local connection at a time)")
+          end
+          session:close()
+        else
+          session:subscribe("#")
+          s.connected, ok_session = true, true
+          s.last_rx, s.last_tx = net.now(), net.now()
+          device:online()
+          backoff = RECONNECT_MIN
+          log.info(string.format("[roomba] %s: connected to %s", device.label, ip))
+          while s.running do
+            local fok, ferr = flush_queue(s, session)
+            if not fok then log.warn("[roomba] send failed: " .. tostring(ferr)); break end
+            local p, rerr = session:read(1, 10)
+            local now = net.now()
+            if p then
+              s.last_rx = now
+              session:ack(p)
+              if p.type == "publish" then
+                local dok, msg = pcall(json.decode, p.payload)
+                local rep = dok and model.reported(msg)
+                if rep then
+                  model.merge(s.reported, rep)
+                  emit_state(device, s)
+                end
+              end
+            elseif rerr == "timeout" then
+              if now - s.last_tx > PING_AFTER then
+                if not session:ping() then break end
+                s.last_tx = now
+              end
+              if now - s.last_rx > DEAD_AFTER then
+                log.warn("[roomba] " .. device.label .. ": no data for " .. DEAD_AFTER .. " s, reconnecting")
+                break
+              end
+            else
+              log.warn("[roomba] " .. device.label .. ": connection lost: " .. tostring(rerr))
+              break
+            end
+          end
+          session:close()
+          s.connected = false
+        end
+      end
+      if s.running then
+        if not ok_session then device:offline() end
+        net.sleep(backoff)
+        backoff = math.min(RECONNECT_MAX, backoff * 2)
+      end
+    end
+  end
+end
+
+local function start_session(driver, device)
+  local old = sessions[device.id]
+  if old then old.running = false end
+  local s = { running = true, queue = {}, reported = {}, connected = false }
+  sessions[device.id] = s
+  cosock.spawn(function()
+    local ok, err = pcall(run_session, driver, device)
+    if not ok then log.error("[roomba] session crashed: " .. tostring(err)) end
+  end, "roomba-" .. device.id)
+end
+
+-- commands --------------------------------------------------------------------------------
+
+local function current(device)
+  local s = sessions[device.id]
+  return s and s.view or model.view({})
+end
+
+local function do_start(device)
+  local v = current(device)
+  if v.active and (v.movement == "pause" or v.phase == "stop" or v.phase == "pause") then
+    enqueue(device, "resume")
+  elseif v.movement ~= "cleaning" then
+    enqueue(device, "start")
+  end
+end
+
+local function do_dock(device)
+  local v = current(device)
+  if v.movement == "cleaning" then
+    enqueue(device, "pause")
+    enqueue(device, "dock", 3)
+  else
+    enqueue(device, "dock")
+  end
+end
+
+local function handle_on(_, device) do_start(device) end
+local function handle_off(_, device) do_dock(device) end
+
+local function handle_movement(_, device, cmd)
+  local m = cmd.args.mode or cmd.args.robotCleanerMovement
+  if m == "cleaning" then do_start(device)
+  elseif m == "homing" or m == "charging" then do_dock(device)
+  elseif m == "pause" then enqueue(device, "pause")
+  elseif m == "idle" or m == "powerOff" then enqueue(device, "stop")
+  else log.warn("[roomba] unsupported movement " .. tostring(m)) end
+end
+
+local function handle_empty_bin(_, device) enqueue(device, "evac") end
+
+local function handle_refresh(driver, device)
+  local s = sessions[device.id]
+  if s and s.connected then
+    s.last_sig = nil
+    emit_state(device, s)
+  else
+    start_session(driver, device)
+  end
+end
+
+-- lifecycle --------------------------------------------------------------------------------
+
+local discovered = {}
+
+local function device_init(driver, device)
+  if not sessions[device.id] or not sessions[device.id].running then start_session(driver, device) end
+end
+
+local function device_added(driver, device)
+  local info = discovered[device.device_network_id]
+  if info then
+    device:set_field("blid", info.blid, { persist = true })
+    if info.ip then device:set_field("ip", info.ip, { persist = true }) end
+  end
+  device_init(driver, device)
+end
+
+local function info_changed(driver, device, event, args)
+  local old = args and args.old_st_store and args.old_st_store.preferences or {}
+  local p = device.preferences or {}
+  if p.resetPassword and not old.resetPassword then
+    device:set_field("pw", nil, { persist = true })
+    log.info("[roomba] " .. device.label .. ": stored password forgotten, hold HOME on the docked robot")
+  end
+  if p.ipAddress ~= old.ipAddress or p.password ~= old.password or (p.resetPassword and not old.resetPassword) then
+    start_session(driver, device)
+  end
+end
+
+local function device_removed(_, device)
+  local s = sessions[device.id]
+  if s then s.running = false end
+  sessions[device.id] = nil
+end
+
+local function discovery(driver, opts, should_continue)
+  local existing = {}
+  for _, d in ipairs(driver:get_devices()) do existing[d.device_network_id] = d end
+  local found = find_robots(driver, 5)
+  local n = 0
+  for blid, info in pairs(found) do
+    n = n + 1
+    local dni = "roomba-" .. blid
+    discovered[dni] = info
+    local dev = existing[dni]
+    if dev then
+      if info.ip and dev:get_field("ip") ~= info.ip then dev:set_field("ip", info.ip, { persist = true }) end
+    else
+      log.info(string.format("[roomba] found %s (%s) at %s", tostring(info.name), tostring(info.sku), tostring(info.ip)))
+      driver:try_create_device({
+        type = "LAN",
+        device_network_id = dni,
+        label = info.name or "Roomba",
+        profile = "roomba",
+        manufacturer = "iRobot",
+        model = info.sku or "Roomba",
+        vendor_provided_label = info.name or "Roomba",
+      })
+    end
+  end
+  log.info(string.format("[roomba] discovery done, %d robot(s) answered", n))
+end
+
+local driver = Driver("irobot-roomba-local", {
+  discovery = discovery,
+  lifecycle_handlers = {
+    init = device_init,
+    added = device_added,
+    infoChanged = info_changed,
+    removed = device_removed,
+  },
+  capability_handlers = {
+    [capabilities.refresh.ID] = {
+      [capabilities.refresh.commands.refresh.NAME] = handle_refresh,
+    },
+    [switch.ID] = {
+      [switch.commands.on.NAME] = handle_on,
+      [switch.commands.off.NAME] = handle_off,
+    },
+    [rcm.ID] = {
+      [rcm.commands.setRobotCleanerMovement.NAME] = handle_movement,
+    },
+    [momentary.ID] = {
+      [momentary.commands.push.NAME] = handle_empty_bin,
+    },
+  },
+})
+
+log.info("[roomba] iRobot Roomba (local) driver starting, build " .. BUILD)
+driver:run()

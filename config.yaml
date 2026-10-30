@@ -1,0 +1,7 @@
+name: "iRobot Roomba (local)"
+packageKey: "irobot-roomba-local"
+description: "Local control and status of iRobot Roomba robot vacuums (i, s, j, 900 and 600 series with wifi) over the robot's own MQTT connection, directly from the hub"
+vendorSupportInformation: "https://github.com/Stoeckie"
+permissions:
+  lan: {}
+  discovery: {}
