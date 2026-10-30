@@ -14,7 +14,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-10-30d"
+local BUILD = "2026-10-30e"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -230,7 +230,7 @@ local function find_bridge(driver, device)
   local known = device:get_field("bridge")
   if known and bridge_info(known) then return known end
   local last = device:get_field("bridge_scan") or 0
-  if os.time() - last < 3600 then return nil end
+  if os.time() - last < 600 then return nil end
   device:set_field("bridge_scan", os.time())
   local prefix = hub_prefix(driver)
   if not prefix then return nil end
@@ -546,6 +546,7 @@ local cloud_runs = {}
 
 local function handle_refresh(driver, device)
   if cloud_runs[device.id] then
+    device:set_field("bridge_scan", nil) -- Refresh always looks for the bridge again
     cloud_runs[device.id](true)
     device.thread:call_with_delay(20, function() cloud_runs[device.id](false) end)
   end
