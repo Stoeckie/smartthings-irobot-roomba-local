@@ -33,7 +33,7 @@ The robot accepts **one local connection at a time**. If Home Assistant or anoth
 
 The iRobot app keeps favorites in the cloud. Two ways to get them into the **Favorites** list:
 
-**Automatic, with a Stoeckie Bridge** ([smartthings-aeg-bridge](https://github.com/Stoeckie/smartthings-aeg-bridge)): enter your iRobot login on the bridge setup page. The driver finds the bridge on the network (setting **Stoeckie Bridge IP**: `auto`, a fixed IP or `off`) and shows your favorites with their names, refreshed every 6 hours and when you press Refresh. The robot is still controlled locally.
+**Automatic, with a Stoeckie Bridge** ([smartthings-stoeckie-bridge](https://github.com/Stoeckie/smartthings-stoeckie-bridge)): enter your iRobot login on the bridge setup page. The driver finds the bridge on the network (setting **Stoeckie Bridge IP**: `auto`, a fixed IP or `off`) and shows your favorites with their names, refreshed every 6 hours and when you press Refresh. The robot is still controlled locally.
 
 **Without a bridge**, the driver **learns** a favorite the first time it runs: start each favorite once from the iRobot app (or let a schedule run it). The driver stores the map and rooms on the hub and adds it to the Favorites list as "Favorite 1", "Favorite 2" and so on.
 
