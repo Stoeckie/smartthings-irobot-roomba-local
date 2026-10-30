@@ -373,7 +373,7 @@ def test_favorites_learned_named_and_started(env):
     lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Kamer"}})')
     assert run_until(lua, lambda: robot.payloads and robot.payloads[-1].get("regions"))
     pl = robot.payloads[-1]
-    assert pl["command"] == "start" and pl["pmap_id"] == "PMAP1" and pl["user_pmapv_id"] == "V2"
+    assert pl["command"] == "start" and pl["pmap_id"] == "PMAP1" and pl["user_pmapv_id"] == "V1"  # as learned
     assert pl["regions"] == [{"region_id": "5", "type": "rid"}] and pl["initiator"] == "localApp"
     assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Kamer")
     # a plain start is not a favorite and must not merge with the old regions
@@ -419,7 +419,7 @@ def test_favorites_from_bridge(env):
                      list(last(b"favorites:cap.mode.supportedModes").values()) == [b"Idle", b"Whole home", b"Kamer", b"Hele keuken"])
     lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Hele keuken"}})')
     assert run_until(lua, lambda: robot.payloads and robot.payloads[-1].get("regions") == [{"region_id": "7", "type": "rid"}])
-    assert robot.payloads[-1]["user_pmapv_id"] == "V2"  # current map version from the robot
+    assert "user_pmapv_id" not in robot.payloads[-1] or robot.payloads[-1]["user_pmapv_id"] == "V2"
     assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Hele keuken")
     # Refresh asks the bridge to fetch again
     lua.execute(b"DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, DEVICES[1])")

@@ -14,7 +14,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-10-30e"
+local BUILD = "2026-10-30f"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -337,8 +337,9 @@ local function flush_queue(s, session)
   local keep = {}
   for _, item in ipairs(s.queue) do
     if item.at <= now then
-      log.info("[roomba] command " .. item.command)
-      local ok, err = session:publish("cmd", command_payload(item.command, item.params))
+      local payload = command_payload(item.command, item.params)
+      log.info("[roomba] command " .. (item.params and payload or item.command))
+      local ok, err = session:publish("cmd", payload)
       if not ok then return nil, err end
       s.last_tx = now
     else
@@ -532,8 +533,11 @@ local function handle_set_mode(_, device, cmd)
       local params = {}
       for k, v in pairs(e.params or {}) do params[k] = v end
       local s = sessions[device.id]
-      local version = s and params.pmap_id and model.map_version(s.reported, params.pmap_id)
-      if version then params.user_pmapv_id = version end
+      -- keep the map version the favorite was made with (the app sends that one); the robot's own
+      -- list is only a fallback for favorites without one. Overriding it gave "Smart Map problem".
+      if params.pmap_id and not params.user_pmapv_id then
+        params.user_pmapv_id = s and model.map_version(s.reported, params.pmap_id)
+      end
       log.info(string.format("[roomba] %s: start favorite '%s'", device.label, want))
       enqueue(device, e.command or "start", 0, params)
       return
