@@ -11,19 +11,40 @@ local capabilities = require "st.capabilities"
 -- Connection status as a capability, so routines can notify when this device loses its connection
 -- (SmartThings itself has no "device offline" trigger for routines).
 -- Short drops (a reconnect, one missed poll) are ignored: Offline is only emitted after CONN_GRACE seconds down.
+-- Every drop is remembered (time, duration, reason) and shown as "Last drop" once the connection is back.
 local conn_cap = capabilities["silvervalley08660.connectionStatus"]
+local drop_cap = capabilities["silvervalley08660.connectionLog"]
 local CONN_GRACE = 120
 local function emit_conn(dev, v)
   if dev:get_field("conn_status") == v then return end
   local ok = pcall(function() dev:emit_event(conn_cap.status(v)) end)
   if ok then dev:set_field("conn_status", v) end
 end
-local function set_conn(dev, up)
+local function fmt_secs(s)
+  if s < 120 then return string.format("%d s", s) end
+  if s < 7200 then return string.format("%d min", s // 60) end
+  return string.format("%.1f h", s / 3600)
+end
+local function note_drop(dev, reason)
+  if dev:get_field("conn_drop") then return end
+  dev:set_field("conn_drop", { at = os.time(), reason = tostring(reason or "unknown"):sub(1, 120) }, { persist = true })
+end
+local function report_drop(dev)
+  local d = dev:get_field("conn_drop")
+  if type(d) ~= "table" or not d.at then return end
+  dev:set_field("conn_drop", nil, { persist = true })
+  local txt = string.format("%s UTC, %s: %s", os.date("!%Y-%m-%d %H:%M:%S", d.at), fmt_secs(math.max(0, os.time() - d.at)), tostring(d.reason))
+  require("log").info("[conn] " .. tostring(dev.label) .. " back after drop at " .. txt)
+  pcall(function() dev:emit_event(drop_cap.lastDrop(txt:sub(1, 200))) end)
+end
+local function set_conn(dev, up, reason)
   if up then
     dev:set_field("conn_down_since", nil)
+    report_drop(dev)
     emit_conn(dev, "online")
     return
   end
+  note_drop(dev, reason)
   if dev:get_field("conn_down_since") then return end
   local since = os.time()
   dev:set_field("conn_down_since", since)
@@ -41,7 +62,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-01b"
+local BUILD = "2026-11-01c"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -417,6 +438,7 @@ local function run_session(driver, device)
       local sock, cerr = net.connect_tls(ip, net.PORT, 10)
       if not sock then
         log.warn(string.format("[roomba] %s: cannot connect to %s: %s", device.label, ip, tostring(cerr)))
+        s.drop_reason = "cannot connect: " .. tostring(cerr)
         -- the IP may have changed: look again when not fixed in the settings
         if not (pref(device, "ipAddress") or ""):match("%d") then
           local found = find_robots(driver, 3)[blid or ""]
@@ -430,6 +452,7 @@ local function run_session(driver, device)
         local ok, err, rc = session:connect(blid, blid, pw, KEEPALIVE, 10)
         if not ok then
           log.warn(string.format("[roomba] %s: MQTT connect failed: %s", device.label, tostring(err)))
+          s.drop_reason = "MQTT connect failed: " .. tostring(err)
           if rc == 4 or rc == 5 then
             if source == "field" then
               device:set_field("pw", nil, { persist = true })
@@ -470,15 +493,17 @@ local function run_session(driver, device)
               end
             elseif rerr == "timeout" then
               if now - s.last_tx > PING_AFTER then
-                if not session:ping() then break end
+                if not session:ping() then note_drop(device, "ping failed"); break end
                 s.last_tx = now
               end
               if now - s.last_rx > DEAD_AFTER then
                 log.warn("[roomba] " .. device.label .. ": no data for " .. DEAD_AFTER .. " s, reconnecting")
+                note_drop(device, "no data for " .. DEAD_AFTER .. " s")
                 break
               end
             else
               log.warn("[roomba] " .. device.label .. ": connection lost: " .. tostring(rerr))
+              note_drop(device, "connection lost: " .. tostring(rerr))
               break
             end
           end
@@ -487,7 +512,7 @@ local function run_session(driver, device)
         end
       end
       if s.running then
-        if not ok_session then set_conn(device, false); device:offline() end
+        if not ok_session then set_conn(device, false, s.drop_reason); device:offline() end
         net.sleep(backoff)
         backoff = math.min(RECONNECT_MAX, backoff * 2)
       end
