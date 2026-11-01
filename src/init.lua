@@ -7,6 +7,16 @@
 -- No secrets in the code: the password lives in a persistent device field (or a device setting).
 local Driver = require "st.driver"
 local capabilities = require "st.capabilities"
+
+-- Connection status as a capability, so routines can notify when this device loses its connection
+-- (SmartThings itself has no "device offline" trigger for routines).
+local conn_cap = capabilities["silvervalley08660.connectionStatus"]
+local function set_conn(dev, up)
+  local v = up and "online" or "offline"
+  if dev:get_field("conn_status") == v then return end
+  local ok = pcall(function() dev:emit_event(conn_cap.status(v)) end)
+  if ok then dev:set_field("conn_status", v) end
+end
 local log = require "log"
 local cosock = require "cosock"
 local json = require "st.json"
@@ -14,7 +24,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-10-30f"
+local BUILD = "2026-11-01a"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -420,7 +430,7 @@ local function run_session(driver, device)
           session:subscribe("#")
           s.connected, ok_session = true, true
           s.last_rx, s.last_tx = net.now(), net.now()
-          device:online()
+          device:online(); set_conn(device, true)
           backoff = RECONNECT_MIN
           log.info(string.format("[roomba] %s: connected to %s", device.label, ip))
           while s.running do
@@ -460,7 +470,7 @@ local function run_session(driver, device)
         end
       end
       if s.running then
-        if not ok_session then device:offline() end
+        if not ok_session then set_conn(device, false); device:offline() end
         net.sleep(backoff)
         backoff = math.min(RECONNECT_MAX, backoff * 2)
       end

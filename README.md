@@ -52,6 +52,12 @@ If you edit the map in the iRobot app, the driver sends the current map version;
 | Favorite names | Names for the learned favorites (without a bridge), comma separated |
 | Forget learned favorites | Clear the learned favorites |
 
+## Offline notification
+
+SmartThings has no routine trigger for "device offline". The Roomba device therefore has a **Connection** status (Connected or Offline). Make a routine to get a message:
+
+If Roomba device > Connection is Offline, then send a notification to members.
+
 ## Privacy
 
 The robot password is stored on the hub only (persistent device field) or in the device setting. Nothing secret is in this code or the package. The driver never logs the password.
