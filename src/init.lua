@@ -62,7 +62,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-01c"
+local BUILD = "2026-11-02a"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -435,7 +435,7 @@ local function run_session(driver, device)
     end
     if ip and pw then
       local ok_session = false
-      local sock, cerr = net.connect_tls(ip, net.PORT, 10)
+      local sock, cerr = net.connect_tls(ip, net.PORT, 10, pw)
       if not sock then
         log.warn(string.format("[roomba] %s: cannot connect to %s: %s", device.label, ip, tostring(cerr)))
         s.drop_reason = "cannot connect: " .. tostring(cerr)
@@ -727,4 +727,11 @@ local driver = Driver("irobot-roomba-local", {
 })
 
 log.info("[roomba] iRobot Roomba (local) driver starting, build " .. BUILD)
+-- certificate pinning: which robot device owns an address
+require("certpin").lookup = function(host)
+  for _, d in ipairs(driver:get_devices()) do
+    if address(d) == host then return d end
+  end
+end
+
 driver:run()

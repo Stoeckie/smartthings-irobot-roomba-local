@@ -7,7 +7,7 @@ M.PORT = 8883
 M.DISCOVERY_PORT = 5678
 
 --- TLS connection to the robot (self-signed certificate, so no verification; LAN only).
-function M.connect_tls(ip, port, timeout)
+function M.connect_tls(ip, port, timeout, secret)
   local ssl = require "cosock.ssl"
   local sock, err = socket.tcp()
   if not sock then return nil, "tcp: " .. tostring(err) end
@@ -27,6 +27,8 @@ function M.connect_tls(ip, port, timeout)
     tls:close()
     return nil, "tls handshake: " .. tostring(herr)
   end
+  local okp, perr = require("certpin").check(tls, ip, secret)
+  if not okp then tls:close(); return nil, perr end
   return tls
 end
 
