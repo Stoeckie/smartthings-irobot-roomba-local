@@ -17,25 +17,52 @@ local function fnv(s)
   return string.format("%08x", h)
 end
 
+local why_off -- first reason fingerprints failed (for the log)
+
+local function peer_cert(tls)
+  for _, get in ipairs({
+    function() return tls:getpeercertificate() end,
+    function() return tls.inner_sock:getpeercertificate() end,
+    function() return tls.sock:getpeercertificate() end,
+  }) do
+    local ok, cert = pcall(get)
+    if ok and cert then return cert end
+    if not ok and not why_off then why_off = tostring(cert) end
+  end
+end
+
 function M.fingerprint(tls)
-  local ok, fp = pcall(function()
-    local cert = tls:getpeercertificate()
-    return cert and cert:digest("sha256")
-  end)
+  local cert = peer_cert(tls)
+  if not cert then return nil end
+  local ok, fp = pcall(function() return cert:digest("sha256") end)
   if ok and type(fp) == "string" and #fp >= 32 then return fp:lower() end
+  -- no digest(): hash the PEM text with the bundled SHA-512
+  local okp, pem = pcall(function() return cert:pem() end)
+  local oks, sha = pcall(require, "sha512")
+  if okp and type(pem) == "string" and #pem > 100 and oks then
+    return "sha512:" .. sha.hex(sha.sha512(pem)):sub(1, 64)
+  end
+  if not why_off then why_off = "digest: " .. tostring(fp) .. "; pem: " .. tostring(pem) end
   return nil
 end
 
 --- true when the connection may carry `secret`, else nil, reason. Without a secret nothing is checked.
-function M.check(tls, host, secret)
+function M.check(tls, host, secret, device)
   if not secret or secret == "" then return true end
-  local dev = M.lookup and M.lookup(host)
-  if not dev then return true end
+  local okl, dev = true, device
+  if not dev then okl, dev = pcall(function() return M.lookup and M.lookup(host) end) end
+  if not okl or not dev then
+    if not unsupported_logged then
+      unsupported_logged = true
+      log.info("[pin] no SmartThings device found for " .. tostring(host) .. ", not pinned (" .. tostring(dev) .. ")")
+    end
+    return true
+  end
   local fp = M.fingerprint(tls)
   if not fp then
     if not unsupported_logged then
       unsupported_logged = true
-      log.info("[pin] certificate fingerprints are not available on this hub, pinning is off")
+      log.info("[pin] certificate fingerprints are not available on this hub, pinning is off (" .. tostring(why_off) .. ")")
     end
     return true
   end

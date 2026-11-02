@@ -435,7 +435,7 @@ local function run_session(driver, device)
     end
     if ip and pw then
       local ok_session = false
-      local sock, cerr = net.connect_tls(ip, net.PORT, 10, pw)
+      local sock, cerr = net.connect_tls(ip, net.PORT, 10, pw, device)
       if not sock then
         log.warn(string.format("[roomba] %s: cannot connect to %s: %s", device.label, ip, tostring(cerr)))
         s.drop_reason = "cannot connect: " .. tostring(cerr)
