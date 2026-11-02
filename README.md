@@ -62,6 +62,10 @@ Short drops (a reconnect or one missed poll) are ignored: Connection only turns 
 
 Every drop is remembered. When the connection is back, the device shows **Last drop**: time (UTC), how long it lasted and the reason (for example "session closed" or "timeout"). Older drops are in the device history.
 
+## Certificate pinning
+
+The robot uses a self-signed certificate, so it cannot be checked against a certificate authority. The driver remembers the robot's certificate (SHA-256 fingerprint) at the first connection that carries the password. When another certificate answers later (another device on that address, or someone in between), the driver refuses and does not send the password; the log says so. Replaced the robot? Enter the password again: the next certificate is then trusted. On a hub that cannot read certificates the driver logs that pinning is off and works as before.
+
 ## Privacy
 
 The robot password is stored on the hub only (persistent device field) or in the device setting. Nothing secret is in this code or the package. The driver never logs the password.

@@ -9,6 +9,7 @@ local M = {}
 M.lookup = nil -- function(host) -> SmartThings device that owns this host (set by init.lua)
 
 local unsupported_logged = false
+local ok_logged = {}
 
 local function fnv(s)
   local h = 2166136261
@@ -45,7 +46,13 @@ function M.check(tls, host, secret)
     log.info("[pin] " .. tostring(dev.label) .. ": certificate of " .. host .. " remembered (" .. fp:sub(1, 16) .. "...)")
     return true
   end
-  if pin.fp == fp then return true end
+  if pin.fp == fp then
+    if not ok_logged[dev.id or dev] then
+      ok_logged[dev.id or dev] = true
+      log.info("[pin] " .. tostring(dev.label) .. ": certificate of " .. host .. " matches (" .. fp:sub(1, 16) .. "...)")
+    end
+    return true
+  end
   log.error("[pin] " .. tostring(dev.label) .. ": certificate of " .. host .. " changed, secret NOT sent. "
     .. "Replaced the device? Enter the key/token again to trust the new certificate.")
   return nil, "certificate of " .. host .. " changed (secret not sent)"
