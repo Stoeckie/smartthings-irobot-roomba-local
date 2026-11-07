@@ -62,7 +62,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-08a"
+local BUILD = "2026-11-08b"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
