@@ -7,8 +7,10 @@ Status and control of an **iRobot Roomba** in SmartThings, directly from the hub
 * `robotCleanerMovement`: cleaning, pause, homing, charging, idle, alarm (stuck or error). Set it to start, pause, stop or send the robot home
 * `switch`: on = start (or resume a paused job), off = back to the dock
 * `battery`
-* Component **Favorites** (`mode`): your iRobot app favorites (room cleaning), plus Whole home and Idle. Pick one to start it
-* Component **Empty bin** (`momentary`): empties the bin into the Clean Base (models with auto empty)
+* **Favorite** (custom capability `silvervalley08660.robotFavorites`, on the main card): a list with your iRobot app favorites (room cleaning), plus Whole home and Idle. Pick one to start it. Also usable in routines (condition and action)
+* **Empty bin** button in the same card: empties the bin into the Clean Base (models with auto empty)
+
+Since build 2026-11-08a the separate Favorites and Empty bin components are gone; routines that used them must be set up again with **Favorite** / **Start favorite**.
 * Live updates: the robot pushes every change
 * Routine examples: *movement changes to charging → "Roomba is done"*, *movement is alarm → "Roomba is stuck"*, *everyone left → switch on*
 
@@ -31,11 +33,11 @@ The robot accepts **one local connection at a time**. If Home Assistant or anoth
 
 ## Favorites
 
-The iRobot app keeps favorites in the cloud. Two ways to get them into the **Favorites** list:
+The iRobot app keeps favorites in the cloud. Two ways to get them into the **Favorite** list:
 
 **Automatic, with a Stoeckie Bridge** ([smartthings-stoeckie-bridge](https://github.com/Stoeckie/smartthings-stoeckie-bridge)): enter your iRobot login on the bridge setup page. The driver finds the bridge on the network (setting **Stoeckie Bridge IP**: `auto`, a fixed IP or `off`) and shows your favorites with their names, refreshed every 6 hours and when you press Refresh. The robot is still controlled locally.
 
-**Without a bridge**, the driver **learns** a favorite the first time it runs: start each favorite once from the iRobot app (or let a schedule run it). The driver stores the map and rooms on the hub and adds it to the Favorites list as "Favorite 1", "Favorite 2" and so on.
+**Without a bridge**, the driver **learns** a favorite the first time it runs: start each favorite once from the iRobot app (or let a schedule run it). The driver stores the map and rooms on the hub and adds it to the Favorite list as "Favorite 1", "Favorite 2" and so on.
 
 Name them in the device settings under **Favorite names**, comma separated in the order they were learned, e.g. `Kamer, Hele keuken`. The log shows `learned favorite N` each time. **Forget learned favorites** clears the list.
 

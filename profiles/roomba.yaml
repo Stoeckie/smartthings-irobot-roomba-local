@@ -6,6 +6,8 @@ components:
         version: 1
       - id: switch
         version: 1
+      - id: silvervalley08660.robotFavorites
+        version: 1
       - id: battery
         version: 1
       - id: silvervalley08660.connectionStatus
@@ -16,16 +18,6 @@ components:
         version: 1
     categories:
       - name: RobotCleaner
-  - id: favorites
-    label: Favorites
-    capabilities:
-      - id: mode
-        version: 1
-  - id: emptyBin
-    label: Empty bin
-    capabilities:
-      - id: momentary
-        version: 1
 preferences:
   - name: ipAddress
     title: Robot IP (optional)

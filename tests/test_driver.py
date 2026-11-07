@@ -153,6 +153,7 @@ local function capmock(path)
 end
 local caps = capmock("cap")
 for _, id in ipairs({ "refresh", "switch", "robotCleanerMovement", "momentary", "battery", "mode" }) do caps[id].ID = id end
+caps["silvervalley08660.robotFavorites"].ID = "robotFavorites"
 package.loaded["st.capabilities"] = caps
 package.loaded["st.driver"] = function(name, tmpl) DRIVER = tmpl; return { run = function() end } end
 LOG = {}
@@ -203,7 +204,7 @@ DEVICES = {}
 function NEW_DEVICE(info)
   local d = { id = info.id or ("dev" .. (#DEVICES + 1)), fields = {}, preferences = info.preferences or {},
               device_network_id = info.device_network_id, label = info.label, events = {}, state = "?",
-              profile = { components = { main = { id = "main" }, favorites = { id = "favorites" } } } }
+              profile = { components = { main = { id = "main" } } } }
   function d:get_field(k) return self.fields[k] end
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = e end
@@ -311,7 +312,7 @@ def test_password_login_state_commands(env):
                      {dev.events[i].path for i in range(1, len(dev.events) + 1)})
     lua.execute(b'DRIVER.capability_handlers.switch.off(DRIVER_OBJ, DEVICES[1])')
     assert run_until(lua, lambda: robot.commands[-2:] == ["pause", "dock"], 10)
-    lua.execute(b'DRIVER.capability_handlers.momentary.push(DRIVER_OBJ, DEVICES[1], {component="emptyBin"})')
+    lua.execute(b'DRIVER.capability_handlers.robotFavorites.emptyBin(DRIVER_OBJ, DEVICES[1], {component="main"})')
     assert run_until(lua, lambda: robot.commands[-1] == "evac")
     lua.execute(b'DRIVER.capability_handlers.robotCleanerMovement.setRobotCleanerMovement('
                 b'DRIVER_OBJ, DEVICES[1], {args={mode="cleaning"}})')
@@ -365,20 +366,20 @@ def test_favorites_learned_named_and_started(env):
             if dev.events[i].path == path:
                 val = dev.events[i].arg
         return val
-    assert run_until(lua, lambda: last(b"favorites:cap.mode.supportedModes") is not None)
-    modes = list(last(b"favorites:cap.mode.supportedModes").values())
+    assert run_until(lua, lambda: last(b"cap.silvervalley08660.robotFavorites.supportedFavorites") is not None)
+    modes = list(last(b"cap.silvervalley08660.robotFavorites.supportedFavorites").values())
     assert modes == [b"Idle", b"Whole home", b"Kamer"]
     # charging, not active -> Idle
-    assert last(b"favorites:cap.mode.mode") == b"Idle"
-    lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Kamer"}})')
+    assert last(b"cap.silvervalley08660.robotFavorites.favorite") == b"Idle"
+    lua.execute(b'DRIVER.capability_handlers.robotFavorites.setFavorite(DRIVER_OBJ, DEVICES[1], {component="main", args={favorite="Kamer"}})')
     assert run_until(lua, lambda: robot.payloads and robot.payloads[-1].get("regions"))
     pl = robot.payloads[-1]
     assert pl["command"] == "start" and pl["pmap_id"] == "PMAP1" and pl["user_pmapv_id"] == "V1"  # as learned
     assert pl["regions"] == [{"region_id": "5", "type": "rid"}] and pl["initiator"] == "localApp"
-    assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Kamer")
+    assert run_until(lua, lambda: last(b"cap.silvervalley08660.robotFavorites.favorite") == b"Kamer")
     # a plain start is not a favorite and must not merge with the old regions
-    lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Whole home"}})')
-    assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Whole home")
+    lua.execute(b'DRIVER.capability_handlers.robotFavorites.setFavorite(DRIVER_OBJ, DEVICES[1], {component="main", args={favorite="Whole home"}})')
+    assert run_until(lua, lambda: last(b"cap.silvervalley08660.robotFavorites.favorite") == b"Whole home")
     assert len(json.loads(dev.fields[b"programs"])) == 1
 
 
@@ -415,12 +416,12 @@ def test_favorites_from_bridge(env):
             if dev.events[i].path == path:
                 val = dev.events[i].arg
         return val
-    assert run_until(lua, lambda: last(b"favorites:cap.mode.supportedModes") is not None and
-                     list(last(b"favorites:cap.mode.supportedModes").values()) == [b"Idle", b"Whole home", b"Kamer", b"Hele keuken"])
-    lua.execute(b'DRIVER.capability_handlers.mode.setMode(DRIVER_OBJ, DEVICES[1], {component="favorites", args={mode="Hele keuken"}})')
+    assert run_until(lua, lambda: last(b"cap.silvervalley08660.robotFavorites.supportedFavorites") is not None and
+                     list(last(b"cap.silvervalley08660.robotFavorites.supportedFavorites").values()) == [b"Idle", b"Whole home", b"Kamer", b"Hele keuken"])
+    lua.execute(b'DRIVER.capability_handlers.robotFavorites.setFavorite(DRIVER_OBJ, DEVICES[1], {component="main", args={favorite="Hele keuken"}})')
     assert run_until(lua, lambda: robot.payloads and robot.payloads[-1].get("regions") == [{"region_id": "7", "type": "rid"}])
     assert "user_pmapv_id" not in robot.payloads[-1] or robot.payloads[-1]["user_pmapv_id"] == "V2"
-    assert run_until(lua, lambda: last(b"favorites:cap.mode.mode") == b"Hele keuken")
+    assert run_until(lua, lambda: last(b"cap.silvervalley08660.robotFavorites.favorite") == b"Hele keuken")
     # Refresh asks the bridge to fetch again
     lua.execute(b"DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, DEVICES[1])")
     assert run_until(lua, lambda: any("refresh=1" in c for c in calls))

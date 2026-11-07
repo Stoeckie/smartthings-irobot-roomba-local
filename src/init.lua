@@ -62,7 +62,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-02a"
+local BUILD = "2026-11-08a"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -74,6 +74,7 @@ local switch = capabilities.switch
 local battery = capabilities.battery
 local momentary = capabilities.momentary
 local modecap = capabilities.mode
+local favcap = capabilities["silvervalley08660.robotFavorites"] -- favorites list + Empty bin on the main card
 
 local WHOLE_HOME = "Whole home"
 local IDLE = "Idle"
@@ -218,9 +219,15 @@ local function entries(device)
   return out
 end
 
+local function has_favcap(device)
+  if device.supports_capability_by_id then return device:supports_capability_by_id(favcap.ID) end
+  return true
+end
+
 local function emit_programs(device, s)
   local comp = device.profile and device.profile.components and device.profile.components.favorites
-  if not comp then return end
+  local main = has_favcap(device)
+  if not comp and not main then return end
   local list = { IDLE, WHOLE_HOME }
   local seen = { [IDLE] = true, [WHOLE_HOME] = true }
   for _, e in ipairs(entries(device)) do
@@ -229,7 +236,12 @@ local function emit_programs(device, s)
   local enc = table.concat(list, "\n")
   if s.programs_sig ~= enc then
     s.programs_sig = enc
-    try_emit(device, function() return modecap.supportedModes(list, { visibility = { displayed = false } }) end, comp)
+    if comp then
+      try_emit(device, function() return modecap.supportedModes(list, { visibility = { displayed = false } }) end, comp)
+    end
+    if main then
+      try_emit(device, function() return favcap.supportedFavorites(list, { visibility = { displayed = false } }) end)
+    end
   end
   -- what is running now
   local v = s.view or model.view(s.reported)
@@ -243,7 +255,11 @@ local function emit_programs(device, s)
       end
     end
   end
-  try_emit(device, function() return modecap.mode(now) end, comp)
+  if comp then try_emit(device, function() return modecap.mode(now) end, comp) end
+  if main and s.favorite_now ~= now then
+    s.favorite_now = now
+    try_emit(device, function() return favcap.favorite(now) end)
+  end
 end
 
 local function learn_program(device, s)
@@ -571,8 +587,7 @@ end
 
 local function handle_empty_bin(_, device) enqueue(device, "evac") end
 
-local function handle_set_mode(_, device, cmd)
-  local want = cmd.args.mode
+local function start_favorite(device, want)
   if want == IDLE then
     do_dock(device)
     return
@@ -598,6 +613,9 @@ local function handle_set_mode(_, device, cmd)
   log.warn("[roomba] unknown favorite " .. tostring(want))
 end
 
+local function handle_set_mode(_, device, cmd) start_favorite(device, cmd.args.mode) end
+local function handle_set_favorite(_, device, cmd) start_favorite(device, cmd.args.favorite) end
+
 local cloud_runs = {}
 
 local function handle_refresh(driver, device)
@@ -621,6 +639,8 @@ local discovered = {}
 
 local function device_init(driver, device)
   if not sessions[device.id] or not sessions[device.id].running then start_session(driver, device) end
+  local s = sessions[device.id]
+  if s then s.programs_sig = nil; s.favorite_now = nil; pcall(emit_programs, device, s) end -- the app needs a value at once
   if not cloud_runs[device.id] then cloud_runs[device.id] = schedule_cloud(driver, device) end
 end
 
@@ -720,8 +740,12 @@ local driver = Driver("irobot-roomba-local", {
     [momentary.ID] = {
       [momentary.commands.push.NAME] = handle_empty_bin,
     },
-    [modecap.ID] = {
+    [modecap.ID] = {                       -- older profile with the Favorites component
       [modecap.commands.setMode.NAME] = handle_set_mode,
+    },
+    [favcap.ID] = {
+      [favcap.commands.setFavorite.NAME] = handle_set_favorite,
+      [favcap.commands.emptyBin.NAME] = handle_empty_bin,
     },
   },
 })
