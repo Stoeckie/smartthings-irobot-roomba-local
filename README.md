@@ -8,7 +8,7 @@ Status and control of an **iRobot Roomba** in SmartThings, directly from the hub
 * `switch`: on = start (or resume a paused job), off = back to the dock
 * `battery`
 * **Favorite** (custom capability `silvervalley08660.robotFavorites`, on the main card): a list with your iRobot app favorites (room cleaning), plus Whole home and Idle. Pick one to start it. Also usable in routines (condition and action)
-* **Empty bin** button in the same card: empties the bin into the Clean Base (models with auto empty)
+* **Empty bin** card (custom capability `silvervalley08660.robotBin`): shows the bin (Ready, Full, Emptying) and its button empties the bin into the Clean Base (models with auto empty). "Bin is Full" also works as a routine condition
 
 Since build 2026-11-08a the separate Favorites and Empty bin components are gone; routines that used them must be set up again with **Favorite** / **Start favorite**. Since build 2026-11-08d Connection status and Last drop are in their own **Connection** card at the bottom; an existing offline routine must pick the Connection status again from that card.
 * Live updates: the robot pushes every change

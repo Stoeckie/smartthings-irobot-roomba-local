@@ -8,6 +8,8 @@ components:
         version: 1
       - id: silvervalley08660.robotFavorites
         version: 1
+      - id: silvervalley08660.robotBin
+        version: 1
       - id: battery
         version: 1
       - id: refresh

@@ -154,6 +154,7 @@ end
 local caps = capmock("cap")
 for _, id in ipairs({ "refresh", "switch", "robotCleanerMovement", "momentary", "battery", "mode" }) do caps[id].ID = id end
 caps["silvervalley08660.robotFavorites"].ID = "robotFavorites"
+caps["silvervalley08660.robotBin"].ID = "robotBin"
 package.loaded["st.capabilities"] = caps
 package.loaded["st.driver"] = function(name, tmpl) DRIVER = tmpl; return { run = function() end } end
 LOG = {}
@@ -306,6 +307,7 @@ def test_password_login_state_commands(env):
     assert b"cap.robotCleanerMovement.robotCleanerMovement.charging" in paths
     assert b"cap.switch.switch.off" in paths
     assert b"connection:cap.silvervalley08660.connectionStatus.status" in paths   # own card at the bottom
+    assert events(lua, dev)[b"cap.silvervalley08660.robotBin.binStatus"] == b"ok"
 
     lua.execute(b'DRIVER.capability_handlers.switch.on(DRIVER_OBJ, DEVICES[1])')
     assert run_until(lua, lambda: "start" in robot.commands)
@@ -313,7 +315,7 @@ def test_password_login_state_commands(env):
                      {dev.events[i].path for i in range(1, len(dev.events) + 1)})
     lua.execute(b'DRIVER.capability_handlers.switch.off(DRIVER_OBJ, DEVICES[1])')
     assert run_until(lua, lambda: robot.commands[-2:] == ["pause", "dock"], 10)
-    lua.execute(b'DRIVER.capability_handlers.robotFavorites.emptyBin(DRIVER_OBJ, DEVICES[1], {component="main"})')
+    lua.execute(b'DRIVER.capability_handlers.robotBin.emptyBin(DRIVER_OBJ, DEVICES[1], {component="main"})')
     assert run_until(lua, lambda: robot.commands[-1] == "evac")
     lua.execute(b'DRIVER.capability_handlers.robotCleanerMovement.setRobotCleanerMovement('
                 b'DRIVER_OBJ, DEVICES[1], {args={mode="cleaning"}})')

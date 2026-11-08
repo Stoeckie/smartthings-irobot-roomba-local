@@ -81,7 +81,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-08d"
+local BUILD = "2026-11-08e"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -93,7 +93,8 @@ local switch = capabilities.switch
 local battery = capabilities.battery
 local momentary = capabilities.momentary
 local modecap = capabilities.mode
-local favcap = capabilities["silvervalley08660.robotFavorites"] -- favorites list + Empty bin on the main card
+local favcap = capabilities["silvervalley08660.robotFavorites"] -- favorites list on the main card
+local bincap = capabilities["silvervalley08660.robotBin"]        -- own "Empty bin" card: bin state + button
 
 local WHOLE_HOME = "Whole home"
 local IDLE = "Idle"
@@ -186,6 +187,11 @@ local function emit_state(device, s)
       tostring(v.battery), v.error_text and (" error: " .. v.error_text) or "", v.bin_full and " bin full" or ""))
   end
   s.view = v
+  local bin = v.phase == "evac" and "emptying" or (v.bin_full and "full" or "ok")
+  if bin ~= s.bin_state then
+    s.bin_state = bin
+    try_emit(device, function() return bincap.binStatus(bin) end)
+  end
   if s.emit_programs then s.emit_programs(device, s) end
 end
 
@@ -660,6 +666,7 @@ local function device_init(driver, device)
   if not sessions[device.id] or not sessions[device.id].running then start_session(driver, device) end
   local s = sessions[device.id]
   if s then s.programs_sig = nil; s.favorite_now = nil; pcall(emit_programs, device, s) end -- the app needs a value at once
+  if s and not s.bin_state then try_emit(device, function() return bincap.binStatus("ok") end) end
   if not cloud_runs[device.id] then cloud_runs[device.id] = schedule_cloud(driver, device) end
 end
 
@@ -761,6 +768,9 @@ local driver = Driver("irobot-roomba-local", {
     },
     [modecap.ID] = {                       -- older profile with the Favorites component
       [modecap.commands.setMode.NAME] = handle_set_mode,
+    },
+    [bincap.ID] = {
+      [bincap.commands.emptyBin.NAME] = handle_empty_bin,
     },
     [favcap.ID] = {
       [favcap.commands.setFavorite.NAME] = handle_set_favorite,
