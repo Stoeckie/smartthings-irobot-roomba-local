@@ -15,9 +15,19 @@ local capabilities = require "st.capabilities"
 local conn_cap = capabilities["silvervalley08660.connectionStatus"]
 local drop_cap = capabilities["silvervalley08660.connectionLog"]
 local CONN_GRACE = 120
+-- connection status and log live in their own "connection" component, so the app shows them at the bottom
+-- (in main the app put them above the cleaner card, whatever the order in the profile)
+local function conn_comp(dev)
+  local c = dev.profile and dev.profile.components and dev.profile.components.connection
+  return c, c and c.id or "main"
+end
+local function conn_event(dev, ev)
+  local c = conn_comp(dev)
+  if c then dev:emit_component_event(c, ev) else dev:emit_event(ev) end
+end
 local function emit_conn(dev, v)
   if dev:get_field("conn_status") == v then return end
-  local ok = pcall(function() dev:emit_event(conn_cap.status(v)) end)
+  local ok = pcall(function() conn_event(dev, conn_cap.status(v)) end)
   if ok then dev:set_field("conn_status", v) end
 end
 local function fmt_secs(s)
@@ -35,7 +45,7 @@ local function report_drop(dev)
   dev:set_field("conn_drop", nil, { persist = true })
   local txt = string.format("%s UTC, %s: %s", os.date("!%Y-%m-%d %H:%M:%S", d.at), fmt_secs(math.max(0, os.time() - d.at)), tostring(d.reason))
   require("log").info("[conn] " .. tostring(dev.label) .. " back after drop at " .. txt)
-  pcall(function() dev:emit_event(drop_cap.lastDrop(txt:sub(1, 200))) end)
+  pcall(function() conn_event(dev, drop_cap.lastDrop(txt:sub(1, 200))) end)
 end
 local function set_conn(dev, up, reason)
   if up then
@@ -43,9 +53,10 @@ local function set_conn(dev, up, reason)
     if not dev:get_field("drop_seen") then
       -- the app wants a value for every attribute ("not all status information updated yet" otherwise)
       dev:set_field("drop_seen", true)
-      local ok, v = pcall(dev.get_latest_state, dev, "main", drop_cap.ID, "lastDrop")
+      local _, cid = conn_comp(dev)
+      local ok, v = pcall(dev.get_latest_state, dev, cid, drop_cap.ID, "lastDrop")
       if ok and v == nil and not dev:get_field("conn_drop") then
-        pcall(function() dev:emit_event(drop_cap.lastDrop("No drops yet")) end)
+        pcall(function() conn_event(dev, drop_cap.lastDrop("No drops yet")) end)
       end
     end
     report_drop(dev)
@@ -70,7 +81,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-08c"
+local BUILD = "2026-11-08d"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120

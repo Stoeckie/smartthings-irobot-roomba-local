@@ -10,14 +10,17 @@ components:
         version: 1
       - id: battery
         version: 1
-      - id: silvervalley08660.connectionLog
-        version: 1
       - id: refresh
-        version: 1
-      - id: silvervalley08660.connectionStatus
         version: 1
     categories:
       - name: RobotCleaner
+  - id: connection
+    label: Connection
+    capabilities:
+      - id: silvervalley08660.connectionStatus
+        version: 1
+      - id: silvervalley08660.connectionLog
+        version: 1
 preferences:
   - name: ipAddress
     title: Robot IP (optional)

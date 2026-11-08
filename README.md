@@ -10,7 +10,7 @@ Status and control of an **iRobot Roomba** in SmartThings, directly from the hub
 * **Favorite** (custom capability `silvervalley08660.robotFavorites`, on the main card): a list with your iRobot app favorites (room cleaning), plus Whole home and Idle. Pick one to start it. Also usable in routines (condition and action)
 * **Empty bin** button in the same card: empties the bin into the Clean Base (models with auto empty)
 
-Since build 2026-11-08a the separate Favorites and Empty bin components are gone; routines that used them must be set up again with **Favorite** / **Start favorite**.
+Since build 2026-11-08a the separate Favorites and Empty bin components are gone; routines that used them must be set up again with **Favorite** / **Start favorite**. Since build 2026-11-08d Connection status and Last drop are in their own **Connection** card at the bottom; an existing offline routine must pick the Connection status again from that card.
 * Live updates: the robot pushes every change
 * Routine examples: *movement changes to charging → "Roomba is done"*, *movement is alarm → "Roomba is stuck"*, *everyone left → switch on*
 
@@ -56,7 +56,7 @@ If you edit the map in the iRobot app, the driver sends the current map version;
 
 ## Offline notification
 
-SmartThings has no routine trigger for "device offline". The Roomba device therefore has a **Connection** status (Connected or Offline). Make a routine to get a message:
+SmartThings has no routine trigger for "device offline". The Roomba device therefore has a **Connection** card at the bottom of the device page (status Connected or Offline, plus the last drop). Make a routine to get a message:
 
 If Roomba device > Connection is Offline, then send a notification to members.
 

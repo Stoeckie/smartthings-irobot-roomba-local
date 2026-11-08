@@ -204,7 +204,7 @@ DEVICES = {}
 function NEW_DEVICE(info)
   local d = { id = info.id or ("dev" .. (#DEVICES + 1)), fields = {}, preferences = info.preferences or {},
               device_network_id = info.device_network_id, label = info.label, events = {}, state = "?",
-              profile = { components = { main = { id = "main" } } } }
+              profile = { components = { main = { id = "main" }, connection = { id = "connection" } } } }
   function d:get_field(k) return self.fields[k] end
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = e end
@@ -305,6 +305,7 @@ def test_password_login_state_commands(env):
     paths = {dev.events[i].path for i in range(1, len(dev.events) + 1)}
     assert b"cap.robotCleanerMovement.robotCleanerMovement.charging" in paths
     assert b"cap.switch.switch.off" in paths
+    assert b"connection:cap.silvervalley08660.connectionStatus.status" in paths   # own card at the bottom
 
     lua.execute(b'DRIVER.capability_handlers.switch.on(DRIVER_OBJ, DEVICES[1])')
     assert run_until(lua, lambda: "start" in robot.commands)
