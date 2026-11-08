@@ -86,8 +86,9 @@ local json = require "st.json"
 local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
+local emitq = require "emitq"  -- only changed values go to the hub (see emitq.lua)
 
-local BUILD = "2026-11-08g"
+local BUILD = "2026-11-09a"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -171,10 +172,7 @@ end
 -- state -> events -------------------------------------------------------------------
 
 local function try_emit(device, make, component)
-  local ok, err = pcall(function()
-    local ev = make()
-    if component then device:emit_component_event(component, ev) else device:emit_event(ev) end
-  end)
+  local ok, err = pcall(function() emitq.emit(device, make(), component) end)
   if not ok then log.warn("[roomba] " .. tostring(device.label) .. ": " .. tostring(err)) end
 end
 
@@ -605,7 +603,14 @@ local function do_dock(device)
 end
 
 local function handle_on(_, device) do_start(device) end
-local function handle_off(_, device) do_dock(device) end
+local function handle_off(_, device)
+  local v = current(device)
+  if v.movement == "charging" or v.movement == "homing" then  -- already on or going to the dock
+    log.info(string.format("[roomba] %s: already %s, nothing sent", device.label, v.movement))
+    return
+  end
+  do_dock(device)
+end
 
 local function handle_movement(_, device, cmd)
   local m = cmd.args.mode or cmd.args.robotCleanerMovement
@@ -630,7 +635,8 @@ local function start_favorite(device, want)
   local s = sessions[device.id]
   if s and s.favorite_now ~= nil and want == s.favorite_now then
     log.info(string.format("[roomba] %s: favorite already '%s', nothing sent", device.label, tostring(want)))
-    pcall(function() device:emit_event(favcap.favorite(want)) end)
+    -- the same value again, forced: the list in the app must show the favorite again (the hub would drop it)
+    pcall(function() local ev = favcap.favorite(want); ev.state_change = true; device:emit_event(ev) end)
     return
   end
   if want == IDLE then
@@ -730,6 +736,7 @@ local function info_changed(driver, device, event, args)
 end
 
 local function device_removed(_, device)
+  emitq.forget(device)
   cloud_runs[device.id] = nil
   local s = sessions[device.id]
   if s then s.running = false end

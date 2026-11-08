@@ -82,6 +82,7 @@ The robot password is stored on the hub only (persistent device field) or in the
 * Commands: `{"command": "start|pause|resume|stop|dock|evac", "time": ..., "initiator": "localApp"}` on topic `cmd`. Off while cleaning sends pause first, then dock.
 * Favorites: learned from `lastCommand` (`pmap_id`, `regions`, `ordered`), started with `start` plus those fields and the current `user_pmapv_id` from `pmaps`.
 * TLS verification is off: the robot uses a self-signed certificate (LAN only).
+* Events: a value only goes to the hub when it changed (the robot pushes its state often; re-emitting unchanged values makes the hub drop events). After a driver start every value is sent once so the app catches up. Off while the robot is already docked or docking sends nothing.
 
 Protocol details from [roombapy](https://github.com/pschmitt/roombapy) and [dorita980](https://github.com/koalazak/dorita980).
 
