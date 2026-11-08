@@ -24,6 +24,15 @@ components:
       - id: silvervalley08660.connectionLog
         version: 1
 preferences:
+  - name: offlineAfter
+    title: Offline after (minutes)
+    description: "Connection only turns Offline after this many minutes without contact, so a short network outage (e.g. a router update at night) gives no notification."
+    required: false
+    preferenceType: integer
+    definition:
+      minimum: 1
+      maximum: 120
+      default: 5
   - name: ipAddress
     title: Robot IP (optional)
     description: Leave on "auto" (found on the network). Set a fixed IP when discovery fails.

@@ -62,7 +62,7 @@ If Roomba device > Connection is Offline, then send a notification to members.
 
 For a "back online" message as well, duplicate that routine and change the condition to Connection is Connected (e.g. text "... is back online"). Then you know the problem is over without opening the app.
 
-Short drops (a reconnect or one missed poll) are ignored: Connection only turns Offline after 2 minutes without a connection.
+Short drops (a reconnect or one missed poll) are ignored: Connection only turns Offline after **Offline after (minutes)** without a connection (setting, default 5), so a short network outage such as a router update at night gives no notification.
 
 Every drop is remembered. When the connection is back, the device shows **Last drop**: time (UTC), how long it lasted and the reason (for example "session closed" or "timeout"). Older drops are in the device history.
 
