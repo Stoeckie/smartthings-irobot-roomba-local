@@ -45,9 +45,10 @@ local function raw_emit(dev, comp, ev)
 end
 
 --- Emit ev on dev (component comp, or main). Returns true when an event went out, false when it was unchanged.
+--- force = true sends it even when unchanged, with state_change (a manual refresh: the cloud catches up).
 --- Errors from the device (e.g. a capability not in the profile) propagate like with dev:emit_event, and the
 --- value is then not remembered, so the next identical value is tried again.
-function M.emit(dev, ev, comp)
+function M.emit(dev, ev, comp, force)
   local key = ev_key(comp, ev)
   local val
   if key then
@@ -68,7 +69,7 @@ function M.emit(dev, ev, comp)
   if not cache then cache = {}; M.cache[dev.id] = cache end
   local c, now = cache[key], os.time()
   local resend = M.resend_secs or 0
-  if c and c.v == val and (resend <= 0 or now - c.t < resend + jitter(key, resend)) then return false end
+  if c and c.v == val and not force and (resend <= 0 or now - c.t < resend + jitter(key, resend)) then return false end
   if not c or c.v == val then ev.state_change = true end
   raw_emit(dev, comp, ev)
   cache[key] = { v = val, t = now }
@@ -76,8 +77,8 @@ function M.emit(dev, ev, comp)
 end
 
 --- Emit and swallow errors (an unknown enum value only skips that event). Returns true when it went out.
-function M.try(dev, ev, comp)
-  local ok, res = pcall(M.emit, dev, ev, comp)
+function M.try(dev, ev, comp, force)
+  local ok, res = pcall(M.emit, dev, ev, comp, force)
   if not ok then log.warn("[emitq] " .. tostring(dev.label) .. ": " .. tostring(res)); return false end
   return res
 end
