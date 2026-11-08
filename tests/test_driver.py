@@ -384,6 +384,11 @@ def test_favorites_learned_named_and_started(env):
     lua.execute(b'DRIVER.capability_handlers.robotFavorites.setFavorite(DRIVER_OBJ, DEVICES[1], {component="main", args={favorite="Whole home"}})')
     assert run_until(lua, lambda: last(b"cap.silvervalley08660.robotFavorites.favorite") == b"Whole home")
     assert len(json.loads(dev.fields[b"programs"])) == 1
+    # list opened and closed without a choice: the shown favorite comes again, nothing may be sent
+    n = len(robot.commands)
+    lua.execute(b'DRIVER.capability_handlers.robotFavorites.setFavorite(DRIVER_OBJ, DEVICES[1], {component="main", args={favorite="Whole home"}})')
+    for _ in range(20): lua.execute(b"STEP()")
+    assert len(robot.commands) == n
 
 
 def test_favorites_from_bridge(env):

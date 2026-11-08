@@ -87,7 +87,7 @@ local mqtt = require "mqtt"
 local model = require "roomba_model"
 local net = require "transport"
 
-local BUILD = "2026-11-08f"
+local BUILD = "2026-11-08g"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -609,6 +609,12 @@ local function handle_off(_, device) do_dock(device) end
 
 local function handle_movement(_, device, cmd)
   local m = cmd.args.mode or cmd.args.robotCleanerMovement
+  local s = sessions[device.id]
+  local now = s and s.view and s.view.movement
+  if now ~= nil and m == now then -- shown value sent again (list opened and closed): nothing to do
+    log.info(string.format("[roomba] %s: already %s, nothing sent", device.label, tostring(m)))
+    return
+  end
   if m == "cleaning" then do_start(device)
   elseif m == "homing" or m == "charging" then do_dock(device)
   elseif m == "pause" then enqueue(device, "pause")
@@ -619,6 +625,14 @@ end
 local function handle_empty_bin(_, device) enqueue(device, "evac") end
 
 local function start_favorite(device, want)
+  -- the app sends the shown favorite again when the list is opened and closed without a choice: that must
+  -- not dock or restart the robot
+  local s = sessions[device.id]
+  if s and s.favorite_now ~= nil and want == s.favorite_now then
+    log.info(string.format("[roomba] %s: favorite already '%s', nothing sent", device.label, tostring(want)))
+    pcall(function() device:emit_event(favcap.favorite(want)) end)
+    return
+  end
   if want == IDLE then
     do_dock(device)
     return
