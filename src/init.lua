@@ -88,7 +88,7 @@ local model = require "roomba_model"
 local net = require "transport"
 local emitq = require "emitq"  -- only changed values go to the hub (see emitq.lua)
 
-local BUILD = "2026-11-09a"
+local BUILD = "2026-11-09b"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120

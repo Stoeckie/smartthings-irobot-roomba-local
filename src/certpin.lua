@@ -59,15 +59,23 @@ function M.check(tls, host, secret, device)
     return true
   end
   local fp = M.fingerprint(tls)
+  local pin = dev:get_field("cert_pin")
   if not fp then
+    -- a certificate was pinned before: without a fingerprint now it cannot be checked, so the secret stays
+    -- here (fail closed). Never pinned (this hub gives no fingerprints at all): nothing to compare with.
+    if type(pin) == "table" and pin.fp then
+      log.error("[pin] " .. tostring(dev.label) .. ": the certificate of " .. host .. " could not be read, secret NOT sent ("
+        .. tostring(why_off) .. ")")
+      return nil, "certificate of " .. host .. " could not be checked (secret not sent)"
+    end
     if not unsupported_logged then
       unsupported_logged = true
-      log.info("[pin] certificate fingerprints are not available on this hub, pinning is off (" .. tostring(why_off) .. ")")
+      log.warn("[pin] certificate fingerprints are not available on this hub, the certificate is not pinned ("
+        .. tostring(why_off) .. ")")
     end
     return true
   end
   local sid = fnv(secret)
-  local pin = dev:get_field("cert_pin")
   if type(pin) ~= "table" or pin.s ~= sid then
     dev:set_field("cert_pin", { fp = fp, s = sid }, { persist = true })
     log.info("[pin] " .. tostring(dev.label) .. ": certificate of " .. host .. " remembered (" .. fp:sub(1, 16) .. "...)")
