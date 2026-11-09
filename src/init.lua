@@ -88,11 +88,14 @@ local model = require "roomba_model"
 local net = require "transport"
 local emitq = require "emitq"  -- only changed values go to the hub (see emitq.lua)
 
-local BUILD = "2026-11-09b"
+local BUILD = "2026-11-09c"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
-local PW_RETRY = 5
+local PW_RETRY = 5          -- ask for the password every 5 s ...
+local PW_FAST_FOR = 600     -- ... for 10 minutes after init / Refresh,
+local PW_RETRY_SLOW = 120   -- then every 2 min (each try opens a TLS connection to the robot)
+local QUEUE_MAX_AGE = 60    -- a command not sent within 60 s is dropped (a late "dock" surprises people)
 local RECONNECT_MIN, RECONNECT_MAX = 5, 120
 
 local rcm = capabilities.robotCleanerMovement
@@ -176,6 +179,12 @@ local function try_emit(device, make, component)
   if not ok then log.warn("[roomba] " .. tostring(device.label) .. ": " .. tostring(err)) end
 end
 
+-- what the platform shows now for an attribute (nil when unknown or not available)
+local function latest(device, comp_id, cap_id, attr)
+  local ok, v = pcall(device.get_latest_state, device, comp_id, cap_id, attr)
+  if ok then return v end
+end
+
 local function emit_state(device, s)
   local v = model.view(s.reported)
   if v.phase == "" and v.battery == nil then return end -- nothing useful yet
@@ -234,9 +243,12 @@ end
 local function entries(device)
   local out = {}
   for _, f in ipairs(cloud_favorites(device)) do
-    local params = type(f.params) == "table" and f.params or {}
-    local p = model.program_from({ command = f.command or "start", pmap_id = params.pmap_id, regions = params.regions })
-    out[#out + 1] = { name = f.name, command = f.command or "start", params = params, key = p and p.key }
+    -- a favorite without a name cannot be shown or chosen (and a nil name broke the list)
+    if type(f) == "table" and type(f.name) == "string" and f.name ~= "" then
+      local params = type(f.params) == "table" and f.params or {}
+      local p = model.program_from({ command = f.command or "start", pmap_id = params.pmap_id, regions = params.regions })
+      out[#out + 1] = { name = f.name, command = f.command or "start", params = params, key = p and p.key }
+    end
   end
   if #out > 0 then return out end
   local names = program_names(device)
@@ -260,7 +272,7 @@ local function emit_programs(device, s)
   local list = { IDLE, WHOLE_HOME }
   local seen = { [IDLE] = true, [WHOLE_HOME] = true }
   for _, e in ipairs(entries(device)) do
-    if not seen[e.name] then list[#list + 1] = e.name; seen[e.name] = true end
+    if e.name and not seen[e.name] then list[#list + 1] = e.name; seen[e.name] = true end
   end
   local enc = table.concat(list, "\n")
   if s.programs_sig ~= enc then
@@ -280,11 +292,17 @@ local function emit_programs(device, s)
     local p = model.program_from(s.reported.lastCommand)
     if p then
       for _, e in ipairs(entries(device)) do
-        if e.key == p.key then now = e.name end
+        if e.key == p.key and e.name then now = e.name end
       end
     end
   end
-  if comp then try_emit(device, function() return modecap.mode(now) end, comp) end
+  -- no robot data yet (driver start): "Idle" is only a placeholder, so keep what the platform shows
+  -- (the robot may be cleaning); the real value follows with the first state from the robot
+  local guess = s.view == nil
+  if comp and not (guess and latest(device, comp.id, modecap.ID, "mode") ~= nil) then
+    try_emit(device, function() return modecap.mode(now) end, comp)
+  end
+  if main and guess and latest(device, "main", favcap.ID, "favorite") ~= nil then return end
   if main and s.favorite_now ~= now then
     s.favorite_now = now
     try_emit(device, function() return favcap.favorite(now) end)
@@ -416,6 +434,11 @@ end
 local function enqueue(device, command, delay, params)
   local s = sessions[device.id]
   if not s then return end
+  if not s.connected then
+    -- not queued: it would otherwise run whenever the connection comes back, maybe hours later
+    log.warn(string.format("[roomba] %s: not connected, command %s dropped", tostring(device.label), command))
+    return
+  end
   s.queue[#s.queue + 1] = { command = command, at = net.now() + (delay or 0), params = params }
 end
 
@@ -427,19 +450,24 @@ end
 
 local function flush_queue(s, session)
   local now = net.now()
-  local keep = {}
-  for _, item in ipairs(s.queue) do
-    if item.at <= now then
+  local i = 1
+  while i <= #s.queue do
+    local item = s.queue[i]
+    if now - item.at > QUEUE_MAX_AGE then
+      table.remove(s.queue, i)
+      log.warn("[roomba] command " .. item.command .. " too old, dropped")
+    elseif item.at <= now then
+      -- out of the queue before sending: after a failed send it is not sent again on the next connection
+      table.remove(s.queue, i)
       local payload = command_payload(item.command, item.params)
       log.info("[roomba] command " .. (item.params and payload or item.command))
       local ok, err = session:publish("cmd", payload)
       if not ok then return nil, err end
       s.last_tx = now
     else
-      keep[#keep + 1] = item
+      i = i + 1
     end
   end
-  s.queue = keep
   return true
 end
 
@@ -475,7 +503,16 @@ local function run_session(driver, device)
         if err == "unsupported" then
           log.warn("[roomba] " .. device.label .. ": this robot only gives its password to the iRobot cloud")
         end
-        net.sleep(PW_RETRY)
+        if net.now() < (s.pw_fast_until or 0) then
+          net.sleep(PW_RETRY)
+        else
+          if not s.pw_slow then
+            s.pw_slow = true
+            log.info("[roomba] " .. device.label .. ": still no password, asking every "
+              .. PW_RETRY_SLOW .. " s now; press Refresh before holding HOME to ask every " .. PW_RETRY .. " s again")
+          end
+          net.sleep(PW_RETRY_SLOW)
+        end
       end
     end
     if ip and pw then
@@ -494,6 +531,7 @@ local function run_session(driver, device)
         end
       else
         local session = mqtt.new(sock)
+        s.session = session -- so a crash can close it
         local ok, err, rc = session:connect(blid, blid, pw, KEEPALIVE, 10)
         if not ok then
           log.warn(string.format("[roomba] %s: MQTT connect failed: %s", device.label, tostring(err)))
@@ -527,14 +565,18 @@ local function run_session(driver, device)
               s.last_rx = now
               session:ack(p)
               if p.type == "publish" then
-                local dok, msg = pcall(json.decode, p.payload)
-                local rep = dok and model.reported(msg)
-                if rep then
-                  if rep.lastCommand then s.reported.lastCommand = nil end -- replace, never merge
-                  model.merge(s.reported, rep)
-                  if rep.lastCommand then learn_program(device, s) end
-                  emit_state(device, s)
-                end
+                -- one odd message must not end the session: log it and go on with the next one
+                local hok, herr = pcall(function()
+                  local dok, msg = pcall(json.decode, p.payload)
+                  local rep = dok and model.reported(msg)
+                  if rep then
+                    if rep.lastCommand then s.reported.lastCommand = nil end -- replace, never merge
+                    model.merge(s.reported, rep)
+                    if rep.lastCommand then learn_program(device, s) end
+                    emit_state(device, s)
+                  end
+                end)
+                if not hok then log.warn("[roomba] " .. device.label .. ": message skipped: " .. tostring(herr)) end
               end
             elseif rerr == "timeout" then
               if now - s.last_tx > PING_AFTER then
@@ -555,6 +597,7 @@ local function run_session(driver, device)
           session:close()
           s.connected = false
         end
+        s.session = nil
       end
       if s.running then
         if not ok_session then set_conn(device, false, s.drop_reason); device:offline() end
@@ -568,11 +611,18 @@ end
 local function start_session(driver, device)
   local old = sessions[device.id]
   if old then old.running = false end
-  local s = { running = true, queue = {}, reported = {}, connected = false, emit_programs = emit_programs }
+  local s = { running = true, queue = {}, reported = {}, connected = false, emit_programs = emit_programs,
+              pw_fast_until = net.now() + PW_FAST_FOR }
   sessions[device.id] = s
   cosock.spawn(function()
     local ok, err = pcall(run_session, driver, device)
-    if not ok then log.error("[roomba] session crashed: " .. tostring(err)) end
+    if not ok then
+      log.error("[roomba] session crashed: " .. tostring(err))
+      -- mark it dead, so init / Refresh start a new one (Refresh only re-emits while "connected")
+      s.running, s.connected = false, false
+      if s.session then pcall(s.session.close, s.session); s.session = nil end
+      pcall(set_conn, device, false, "session crashed")
+    end
   end, "roomba-" .. device.id)
 end
 
@@ -691,8 +741,15 @@ local discovered = {}
 local function device_init(driver, device)
   if not sessions[device.id] or not sessions[device.id].running then start_session(driver, device) end
   local s = sessions[device.id]
-  if s then s.programs_sig = nil; s.favorite_now = nil; pcall(emit_programs, device, s) end -- the app needs a value at once
-  if s and not s.bin_state then try_emit(device, function() return bincap.binStatus("ok") end) end
+  if s then
+    s.pw_fast_until = net.now() + PW_FAST_FOR
+    -- the app needs a value at once; emit_programs leaves an existing favorite alone until the robot reports
+    s.programs_sig = nil; s.favorite_now = nil; pcall(emit_programs, device, s)
+  end
+  -- "ok" only as a first value: a bin that is full stays full on the card until the robot says otherwise
+  if s and not s.bin_state and latest(device, "main", bincap.ID, "binStatus") == nil then
+    try_emit(device, function() return bincap.binStatus("ok") end)
+  end
   if not cloud_runs[device.id] then cloud_runs[device.id] = schedule_cloud(driver, device) end
 end
 

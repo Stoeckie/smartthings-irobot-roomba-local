@@ -162,6 +162,7 @@ local function L(p) return function(m) LOG[#LOG + 1] = p .. m; print(p .. m) end
 package.loaded["log"] = { info = L("I "), warn = L("W "), error = L("E "), debug = function() end }
 package.loaded["st.json"] = require "st_json"
 TASKS = {}
+SLEEPS = {}
 package.loaded["cosock"] = { spawn = function(fn) TASKS[#TASKS + 1] = coroutine.create(fn) end,
   socket = { gettime = function() return py_time() end } }
 
@@ -188,7 +189,7 @@ package.loaded["transport"] = {
   discover = function(prefix, window)
     return { { ip = "127.0.0.1", data = py_discovery() } }
   end,
-  sleep = function() coroutine.yield() end,
+  sleep = function(secs) SLEEPS[#SLEEPS + 1] = secs; coroutine.yield() end,
   http_get = function(ip, port, path, timeout) return py_http_get(ip, port, path) end,
   now = function() return py_time() end,
 }
@@ -241,11 +242,11 @@ class PySock:
         try:
             d = self.s.recv(int(n))
         except socket.timeout:
-            return None, "timeout"
+            return None, b"timeout"   # bytes: a Python str is not equal to a Lua string with encoding=None
         except OSError as e:
-            return None, str(e)
+            return None, str(e).encode()
         if not d:
-            return None, "closed"
+            return None, b"closed"
         return d, None
 
     def close(self):
@@ -433,3 +434,112 @@ def test_favorites_from_bridge(env):
     # Refresh asks the bridge to fetch again
     lua.execute(b"DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, DEVICES[1])")
     assert run_until(lua, lambda: any("refresh=1" in c for c in calls))
+
+
+def last_of(dev, path):
+    val = None
+    for i in range(1, len(dev.events) + 1):
+        if dev.events[i].path == path:
+            val = dev.events[i].arg
+    return val
+
+
+def has_log(lua, text):
+    logs = lua.eval(b"LOG")
+    return any(text in (logs[i] or b"") for i in range(1, len(logs) + 1))
+
+
+def test_init_keeps_platform_favorite_and_bin(env):
+    # driver restart while the robot cleans with a full bin: no "Idle" / "ok" placeholder over the real state
+    robot, lua = env
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b"""local known = { robotFavorites = { favorite = "Whole home" }, robotBin = { binStatus = "full" } }
+        DEVICES[1].get_latest_state = function(_, comp, cap, attr) return (known[cap] or {})[attr] end""")
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    dev = lua.eval(b"DEVICES[1]")
+    run_until(lua, lambda: False, 0.5)
+    assert last_of(dev, b"cap.silvervalley08660.robotFavorites.supportedFavorites") is not None
+    assert last_of(dev, b"cap.silvervalley08660.robotFavorites.favorite") is None
+    assert last_of(dev, b"cap.silvervalley08660.robotBin.binStatus") is None
+    # once the robot reports, the real values go out
+    robot.listening = True
+    assert run_until(lua, lambda: last_of(dev, b"cap.silvervalley08660.robotFavorites.favorite") == b"Idle")
+    assert last_of(dev, b"cap.silvervalley08660.robotBin.binStatus") == b"ok"
+
+
+def test_command_while_offline_is_not_queued(env):
+    robot, lua = env
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    dev = lua.eval(b"DEVICES[1]")
+    run_until(lua, lambda: False, 0.3)
+    lua.execute(b"DRIVER.capability_handlers.switch.on(DRIVER_OBJ, DEVICES[1])")
+    assert has_log(lua, b"command start dropped")
+    robot.listening = True
+    assert run_until(lua, lambda: dev.state == b"online")
+    run_until(lua, lambda: False, 0.5)
+    assert "start" not in robot.commands
+
+
+def test_password_retry_backs_off(env):
+    robot, lua = env
+    off = [0]
+    lua.globals().py_time = lambda: time.time() + off[0]
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: 5 in list(lua.eval(b"SLEEPS").values()), 3)
+    off[0] = 700  # 10 minutes later, still no HOME press
+    assert run_until(lua, lambda: 120 in list(lua.eval(b"SLEEPS").values()), 5)
+    # Refresh: fast again
+    lua.execute(b"SLEEPS = {}")
+    lua.execute(b"DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: 5 in list(lua.eval(b"SLEEPS").values()), 3)
+
+
+def test_bad_message_does_not_end_session(env):
+    robot, lua = env
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b"""local d = DEVICES[1]; local orig = d.set_field; local n = 0
+        function d:set_field(k, v, o)
+          if k == "programs" and n == 0 then n = 1; error("boom") end
+          return orig(self, k, v, o)
+        end""")
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    dev = lua.eval(b"DEVICES[1]")
+    robot.listening = True
+    assert run_until(lua, lambda: has_log(lua, b"message skipped"))
+    lua.execute(b"DRIVER.capability_handlers.switch.on(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: "start" in robot.commands)
+    assert run_until(lua, lambda: last_of(dev, b"cap.battery.battery") == 87)
+    assert len(robot.logins) == 1  # same session, no reconnect
+
+
+def test_bridge_favorite_without_name_is_skipped(env):
+    robot, lua = env
+
+    def http_get(ip, port, path):
+        path = path.decode() if isinstance(path, bytes) else path
+        if path == "/stbridge/info":
+            return json.dumps({"service": "stoeckie-bridge"}).encode(), None
+        if path.startswith("/stbridge/irobot/" + BLID):
+            return json.dumps({"favorites": [
+                {"command": "start", "params": {"pmap_id": "PMAP1", "regions": [{"region_id": "9", "type": "rid"}]}},
+                {"name": "Kamer", "command": "start",
+                 "params": {"pmap_id": "PMAP1", "ordered": 1, "regions": [{"region_id": "5", "type": "rid"}]}},
+            ]}).encode(), None
+        return None, "HTTP 404"
+    lua.globals().py_http_get = http_get
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    lua.execute(b'DEVICES[1].preferences.bridgeAddress = "127.0.0.1"')
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    dev = lua.eval(b"DEVICES[1]")
+    robot.listening = True
+    assert run_until(lua, lambda: dev.state == b"online")
+    lua.execute(b"for _, fn in ipairs(DELAYED) do fn() end; DELAYED = {}")
+    assert run_until(lua, lambda: dev.fields[b"cloud_favs"] is not None)
+    sup = b"cap.silvervalley08660.robotFavorites.supportedFavorites"
+    assert run_until(lua, lambda: last_of(dev, sup) is not None and
+                     list(last_of(dev, sup).values()) == [b"Idle", b"Whole home", b"Kamer"])
+    lua.execute(b"DRIVER.capability_handlers.switch.on(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: "start" in robot.commands)
+    assert not has_log(lua, b"session crashed") and not has_log(lua, b"message skipped")
