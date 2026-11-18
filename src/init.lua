@@ -193,12 +193,29 @@ local function emit_mission(device, ev)
   local ok, err = pcall(function() emitq.emit(device, ev, device.profile.components.mission) end)
   if not ok then log.warn("[roomba] " .. tostring(device.label) .. ": " .. tostring(err)) end
 end
+local function finish_mission(device, s, m)
+  if s.mission ~= m then return end
+  s.mission = nil
+  local minutes = math.max(m.minutes or 0, math.floor(((m.ending or os.time()) - m.start) / 60 + 0.5))
+  local ended = m.error and ("error: " .. m.error) or (m.user_stop and "stopped or sent home" or "done")
+  local text = string.format("%s, %d min, %sstarted by %s, %s", utc_text(m.start), minutes,
+    m.favorite and (tostring(m.favorite) .. ", ") or "", m.by, ended)
+  log.info(string.format("[roomba] %s: run ended: %s", device.label, text))
+  if missioncap then emit_mission(device, missioncap.lastRun(text)) end
+end
+local STARTS = { start = true, clean = true, quick = true, spot = true, train = true }
+local MISSION_END_WAIT = 30 -- docking can show a few seconds of "run" again (18-11-2026): end a run only after 30 s
 local function track_mission(device, s, v)
   local m = s.mission
+  if v.active and m and m.ending and not (v.mission_no and m.no and v.mission_no ~= m.no) then
+    m.ending = nil -- the same run goes on
+  end
   if v.active and (not m or (v.mission_no and m.no and v.mission_no ~= m.no)) then
+    if m then finish_mission(device, s, m) end
     local who = v.initiator
-    if who == nil or who == "" or who == "none" then who = v.last_initiator end
-    m = { start = os.time(), no = v.mission_no, by = model.initiator_text(who),
+    if (who == nil or who == "" or who == "none") and STARTS[v.last_command or ""] then who = v.last_initiator end
+    -- a run already going when the driver starts: the robot's own minutes give its start
+    m = { start = os.time() - 60 * (v.mission_minutes or 0), no = v.mission_no, by = model.initiator_text(who),
           favorite = s.favorite_now }
     s.mission = m
     log.info(string.format("[roomba] %s: run started by %s%s", device.label, m.by,
@@ -209,16 +226,14 @@ local function track_mission(device, s, v)
   if v.active then
     if v.error ~= 0 and v.error_text then m.error = v.error_text end
     if v.phase == "hmUsrDock" or v.phase == "stop" then m.user_stop = true end
-    if v.mission_minutes then m.minutes = v.mission_minutes end
+    if v.mission_minutes then m.minutes = math.max(m.minutes or 0, v.mission_minutes) end
     return
   end
-  s.mission = nil
-  local minutes = m.minutes or math.floor((os.time() - m.start) / 60 + 0.5)
-  local ended = m.error and ("error: " .. m.error) or (m.user_stop and "stopped or sent home" or "done")
-  local text = string.format("%s, %d min, %sstarted by %s, %s", utc_text(m.start), minutes,
-    m.favorite and (tostring(m.favorite) .. ", ") or "", m.by, ended)
-  log.info(string.format("[roomba] %s: run ended: %s", device.label, text))
-  if missioncap then emit_mission(device, missioncap.lastRun(text)) end
+  if m.ending then return end
+  m.ending = os.time()
+  device.thread:call_with_delay(MISSION_END_WAIT, function()
+    if m.ending then finish_mission(device, s, m) end
+  end)
 end
 
 local function emit_state(device, s)

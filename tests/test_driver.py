@@ -561,20 +561,36 @@ def test_mission_records_who_started_and_how_it_ended(env):
     robot.push()
     assert run_until(lua, lambda: events(lua, dev).get(b"mission:cap.silvervalley08660.robotMission.startedBy")
                      == b"robot schedule")
+    # docking: a short "run" again is the same run, not a new one
+    lua.execute(b"DELAYED = {}")
     robot.phase = "charge"
     robot.push()
+    run_until(lua, lambda: False, 0.5)
+    robot.phase = "run"
+    robot.push()
+    run_until(lua, lambda: False, 0.5)
+    robot.phase = "charge"
+    robot.push()
+    run_until(lua, lambda: False, 0.5)
+    assert b"mission:cap.silvervalley08660.robotMission.lastRun" not in events(lua, dev)
+    lua.execute(b"for _, f in ipairs(DELAYED) do f() end")
     assert run_until(lua, lambda: b"mission:cap.silvervalley08660.robotMission.lastRun" in events(lua, dev))
+    assert sum(1 for i in range(1, len(dev.events) + 1) if dev.events[i].path.endswith(b"robotMission.startedBy")) == 1
     text = events(lua, dev)[b"mission:cap.silvervalley08660.robotMission.lastRun"]
     assert text.endswith(b"started by robot schedule, done") and b" UTC, " in text
     # a run sent home is recorded as such; without initiator in the mission the last command's counts
+    robot.last_command = dict(robot.last_command, command="start", initiator="rmtApp")
     robot.phase, robot.mission = "run", {"nMssn": 8, "initiator": "none"}
     robot.push()
     assert run_until(lua, lambda: events(lua, dev).get(b"mission:cap.silvervalley08660.robotMission.startedBy")
                      == b"iRobot app")
     robot.phase = "hmUsrDock"
     robot.push()
+    lua.execute(b"DELAYED = {}")
     robot.phase = "charge"
     robot.push()
+    run_until(lua, lambda: False, 0.5)
+    lua.execute(b"for _, f in ipairs(DELAYED) do f() end")
     assert run_until(lua, lambda: events(lua, dev)[b"mission:cap.silvervalley08660.robotMission.lastRun"]
                      .endswith(b"started by iRobot app, stopped or sent home"))
 

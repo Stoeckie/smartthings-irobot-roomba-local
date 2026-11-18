@@ -83,6 +83,7 @@ function M.view(r)
     mission_no = tonumber(cms.nMssn),
     initiator = cms.initiator,
     last_initiator = type(r.lastCommand) == "table" and r.lastCommand.initiator or nil,
+    last_command = type(r.lastCommand) == "table" and r.lastCommand.command or nil,
     name = r.name,
     sku = r.sku,
     software = r.softwareVer,
