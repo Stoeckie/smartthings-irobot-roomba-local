@@ -16,6 +16,11 @@ components:
         version: 1
     categories:
       - name: RobotCleaner
+  - id: mission
+    label: Last run
+    capabilities:
+      - id: silvervalley08660.robotMission
+        version: 1
   - id: connection
     label: Connection
     capabilities:

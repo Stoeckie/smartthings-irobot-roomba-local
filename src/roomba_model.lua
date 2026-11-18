@@ -40,6 +40,14 @@ end
 local CLEANING = { run = true, new = true, resume = true, spot = true }
 local HOMING = { hmUsrDock = true, hmPostMsn = true, hmMidMsn = true, dock = true, dockend = true }
 
+-- who started a mission ("initiator" in the robot's report)
+M.INITIATORS = { localApp = "SmartThings or local app", rmtApp = "iRobot app", schedule = "robot schedule",
+  manual = "button on robot", admin = "iRobot service" }
+function M.initiator_text(i)
+  if i == nil or i == "" or i == "none" then return "unknown" end
+  return M.INITIATORS[i] or tostring(i)
+end
+
 --- Flatten the merged reported state into what the driver emits.
 function M.view(r)
   local cms = type(r.cleanMissionStatus) == "table" and r.cleanMissionStatus or {}
@@ -72,6 +80,9 @@ function M.view(r)
     error_text = err ~= 0 and (M.ERRORS[err] or ("error " .. err)) or nil,
     bin_full = bin.full == true,
     mission_minutes = tonumber(cms.mssnM),
+    mission_no = tonumber(cms.nMssn),
+    initiator = cms.initiator,
+    last_initiator = type(r.lastCommand) == "table" and r.lastCommand.initiator or nil,
     name = r.name,
     sku = r.sku,
     software = r.softwareVer,

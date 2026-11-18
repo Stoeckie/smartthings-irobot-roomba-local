@@ -75,6 +75,7 @@ class FakeRoomba:
                              "regions": [{"region_id": "5", "type": "rid"}], "user_pmapv_id": "V1"}
         self.logins = []
         self.phase = "charge"
+        self.mission = {}
         self.conn = None
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -83,7 +84,10 @@ class FakeRoomba:
         return json.dumps({"state": {"reported": {"batPct": 87, "bin": {"present": True, "full": False},
                                                    "lastCommand": self.last_command, "pmaps": [{"PMAP1": "V2"}],
                                                    "cleanMissionStatus": {"cycle": cycle, "phase": self.phase,
-                                                                          "error": 0, "mssnM": 3}}}})
+                                                                          "error": 0, "mssnM": 3, **self.mission}}}})
+
+    def push(self):
+        self.conn.sendall(publish(f"$aws/things/{BLID}/shadow/update", self.state(), qos=0))
 
     def serve(self):
         while True:
@@ -206,7 +210,7 @@ DEVICES = {}
 function NEW_DEVICE(info)
   local d = { id = info.id or ("dev" .. (#DEVICES + 1)), fields = {}, preferences = info.preferences or {},
               device_network_id = info.device_network_id, label = info.label, events = {}, state = "?",
-              profile = { components = { main = { id = "main" }, connection = { id = "connection" } } } }
+              profile = { components = { main = { id = "main" }, connection = { id = "connection" }, mission = { id = "mission" } } } }
   function d:get_field(k) return self.fields[k] end
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = e end
@@ -543,3 +547,33 @@ def test_bridge_favorite_without_name_is_skipped(env):
     lua.execute(b"DRIVER.capability_handlers.switch.on(DRIVER_OBJ, DEVICES[1])")
     assert run_until(lua, lambda: "start" in robot.commands)
     assert not has_log(lua, b"session crashed") and not has_log(lua, b"message skipped")
+
+
+def test_mission_records_who_started_and_how_it_ended(env):
+    robot, lua = env
+    robot.listening = True
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    dev = lua.eval(b"DEVICES[1]")
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: dev.state == b"online")
+    assert run_until(lua, lambda: b"cap.battery.battery" in events(lua, dev))
+    robot.phase, robot.mission = "run", {"nMssn": 7, "initiator": "schedule"}
+    robot.push()
+    assert run_until(lua, lambda: events(lua, dev).get(b"mission:cap.silvervalley08660.robotMission.startedBy")
+                     == b"robot schedule")
+    robot.phase = "charge"
+    robot.push()
+    assert run_until(lua, lambda: b"mission:cap.silvervalley08660.robotMission.lastRun" in events(lua, dev))
+    text = events(lua, dev)[b"mission:cap.silvervalley08660.robotMission.lastRun"]
+    assert text.endswith(b"started by robot schedule, done") and b" UTC, " in text
+    # a run sent home is recorded as such; without initiator in the mission the last command's counts
+    robot.phase, robot.mission = "run", {"nMssn": 8, "initiator": "none"}
+    robot.push()
+    assert run_until(lua, lambda: events(lua, dev).get(b"mission:cap.silvervalley08660.robotMission.startedBy")
+                     == b"iRobot app")
+    robot.phase = "hmUsrDock"
+    robot.push()
+    robot.phase = "charge"
+    robot.push()
+    assert run_until(lua, lambda: events(lua, dev)[b"mission:cap.silvervalley08660.robotMission.lastRun"]
+                     .endswith(b"started by iRobot app, stopped or sent home"))

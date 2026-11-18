@@ -88,7 +88,7 @@ local model = require "roomba_model"
 local net = require "transport"
 local emitq = require "emitq"  -- only changed values go to the hub (see emitq.lua)
 
-local BUILD = "2026-11-09c"
+local BUILD = "2026-11-18a"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -104,6 +104,7 @@ local battery = capabilities.battery
 local momentary = capabilities.momentary
 local modecap = capabilities.mode
 local favcap = capabilities["silvervalley08660.robotFavorites"] -- favorites list on the main card
+local missioncap = capabilities["silvervalley08660.robotMission"] -- who started the run, how the last run ended
 local bincap = capabilities["silvervalley08660.robotBin"]        -- own "Empty bin" card: bin state + button
 
 local WHOLE_HOME = "Whole home"
@@ -185,6 +186,41 @@ local function latest(device, comp_id, cap_id, attr)
   if ok then return v end
 end
 
+-- missions: who started a run and how it ended, kept in the history of the "mission" component (DS 18-11-2026:
+-- a run stopped after a few minutes and nobody could tell why or who had started it)
+local function utc_text(t) return os.date("!%Y-%m-%d %H:%M", t) .. " UTC" end
+local function emit_mission(device, ev)
+  local ok, err = pcall(function() emitq.emit(device, ev, device.profile.components.mission) end)
+  if not ok then log.warn("[roomba] " .. tostring(device.label) .. ": " .. tostring(err)) end
+end
+local function track_mission(device, s, v)
+  local m = s.mission
+  if v.active and (not m or (v.mission_no and m.no and v.mission_no ~= m.no)) then
+    local who = v.initiator
+    if who == nil or who == "" or who == "none" then who = v.last_initiator end
+    m = { start = os.time(), no = v.mission_no, by = model.initiator_text(who),
+          favorite = s.favorite_now }
+    s.mission = m
+    log.info(string.format("[roomba] %s: run started by %s%s", device.label, m.by,
+      m.favorite and (" (" .. tostring(m.favorite) .. ")") or ""))
+    if missioncap then emit_mission(device, missioncap.startedBy(m.by)) end
+  end
+  if not m then return end
+  if v.active then
+    if v.error ~= 0 and v.error_text then m.error = v.error_text end
+    if v.phase == "hmUsrDock" or v.phase == "stop" then m.user_stop = true end
+    if v.mission_minutes then m.minutes = v.mission_minutes end
+    return
+  end
+  s.mission = nil
+  local minutes = m.minutes or math.floor((os.time() - m.start) / 60 + 0.5)
+  local ended = m.error and ("error: " .. m.error) or (m.user_stop and "stopped or sent home" or "done")
+  local text = string.format("%s, %d min, %sstarted by %s, %s", utc_text(m.start), minutes,
+    m.favorite and (tostring(m.favorite) .. ", ") or "", m.by, ended)
+  log.info(string.format("[roomba] %s: run ended: %s", device.label, text))
+  if missioncap then emit_mission(device, missioncap.lastRun(text)) end
+end
+
 local function emit_state(device, s)
   local v = model.view(s.reported)
   if v.phase == "" and v.battery == nil then return end -- nothing useful yet
@@ -206,6 +242,7 @@ local function emit_state(device, s)
     try_emit(device, function() return bincap.binStatus(bin) end)
   end
   if s.emit_programs then s.emit_programs(device, s) end
+  track_mission(device, s, v) -- after the favorite is known
 end
 
 -- favorites ------------------------------------------------------------------------------
