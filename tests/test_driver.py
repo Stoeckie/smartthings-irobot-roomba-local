@@ -577,3 +577,27 @@ def test_mission_records_who_started_and_how_it_ended(env):
     robot.push()
     assert run_until(lua, lambda: events(lua, dev)[b"mission:cap.silvervalley08660.robotMission.lastRun"]
                      .endswith(b"started by iRobot app, stopped or sent home"))
+
+
+def test_dock_is_resent_when_the_robot_stays_paused(env):
+    robot, lua = env
+    robot.listening = True
+    lua.execute(b"DRIVER.discovery(DRIVER_OBJ, {}, function() return true end)")
+    dev = lua.eval(b"DEVICES[1]")
+    lua.execute(b"DRIVER.lifecycle_handlers.added(DRIVER_OBJ, DEVICES[1])")
+    assert run_until(lua, lambda: dev.state == b"online")
+    robot.phase = "stop"
+    robot.mission = {"nMssn": 9}
+    robot.push()
+    assert run_until(lua, lambda: b"cap.robotCleanerMovement.robotCleanerMovement.pause" in
+                     {dev.events[i].path for i in range(1, len(dev.events) + 1)})
+    lua.execute(b"DELAYED = {}")
+    lua.execute(b'DRIVER.capability_handlers.switch.off(DRIVER_OBJ, DEVICES[1])')
+    assert run_until(lua, lambda: robot.commands[-1:] == ["dock"])
+    robot.phase = "stop"     # the robot ignores the dock
+    robot.push()
+    time.sleep(0.3)
+    run_until(lua, lambda: False, 0.5)
+    n = robot.commands.count("dock")
+    lua.execute(b"for _, f in ipairs(DELAYED) do f() end")
+    assert run_until(lua, lambda: robot.commands.count("dock") == n + 1)

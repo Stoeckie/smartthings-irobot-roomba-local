@@ -88,7 +88,7 @@ local model = require "roomba_model"
 local net = require "transport"
 local emitq = require "emitq"  -- only changed values go to the hub (see emitq.lua)
 
-local BUILD = "2026-11-18a"
+local BUILD = "2026-11-18b"
 local KEEPALIVE = 60
 local PING_AFTER = 30
 local DEAD_AFTER = 120
@@ -687,6 +687,14 @@ local function do_dock(device)
   else
     enqueue(device, "dock")
   end
+  -- 18-11-2026: a pause + dock left the robot paused in the room (dock not taken). Check once and resend.
+  device.thread:call_with_delay(20, function()
+    local now = current(device)
+    if now.movement == "pause" then
+      log.warn(string.format("[roomba] %s: still paused 20 s after dock, dock sent again", device.label))
+      enqueue(device, "dock")
+    end
+  end)
 end
 
 local function handle_on(_, device) do_start(device) end
