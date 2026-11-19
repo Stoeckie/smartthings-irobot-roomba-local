@@ -1,0 +1,1 @@
+{"tag":"nl","label":"Laatste beurt","attributes":{"startedBy":{"label":"Gestart door","displayTemplate":"{{device.label}} gestart door {{value}}"},"lastRun":{"label":"Laatste beurt","displayTemplate":"{{device.label}} laatste beurt: {{value}}"}}}

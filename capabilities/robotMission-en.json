@@ -1,0 +1,1 @@
+{"tag":"en","label":"Last run","attributes":{"startedBy":{"label":"Started by","displayTemplate":"{{device.label}} started by {{value}}"},"lastRun":{"label":"Last run","displayTemplate":"{{device.label}} last run: {{value}}"}}}

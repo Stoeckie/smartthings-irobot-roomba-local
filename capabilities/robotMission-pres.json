@@ -1,0 +1,1 @@
+{"dashboard":{"states":[],"actions":[]},"detailView":[{"label":"{{i18n.attributes.startedBy.label}}","displayType":"state","state":{"label":"{{startedBy.value}}"}},{"label":"{{i18n.attributes.lastRun.label}}","displayType":"state","state":{"label":"{{lastRun.value}}"}}],"automation":{"conditions":[],"actions":[]}}
